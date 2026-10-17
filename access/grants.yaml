@@ -1,14 +1,4 @@
 # SSH access grants. Managed by the BM Monitor dashboard: every change arrives
 # as a pull request, is validated by CI, and is applied by the access-apply job
 # only after the required admin approvals. Do not edit by hand. See docs/ACCESS.md.
-grants:
-  - id: "0001"
-    user: mdmahiabdullah2003
-    email: mdmahiabdullah2003@gmail.com
-    servers:
-      - bm3
-    sudo: true
-    reason: Need to deploy a feature
-    public_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICUvocbdsNk/YD3GMjYJqBlf5Rqi3BnM1XBQnS8phiyA mahi abullah@DESKTOP-81KILGF
-    requested_at: 2026-10-17T07:35:27Z
-    expires: 2026-10-24T07:35:27Z
+grants: []
