@@ -328,7 +328,9 @@ func (p *Policy) CheckPR(base, head *File, kind string, now time.Time) PRCheck {
 		if len(c.Removed) != 1 {
 			fail(fmt.Sprintf("a revoke must remove exactly one grant; this one removes %d", len(c.Removed)))
 		} else {
-			res.GrantID, res.RequesterEmail = c.Removed[0].ID, c.Removed[0].Email
+			// No requester: removing access is never self-serving, so the grant
+			// owner's own approval counts too (e.g. a sole admin revoking their grant).
+			res.GrantID = c.Removed[0].ID
 		}
 	default:
 		fail(fmt.Sprintf("unknown pull request kind %q (label it access-request or access-revoke)", kind))

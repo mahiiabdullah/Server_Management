@@ -57,12 +57,12 @@ type GrantView = {
 
 const STATUS: Record<AccessRequest["status"], { tone: "ok" | "warn" | "crit" | "muted" | "accent"; label: string }> = {
   pr_open: { tone: "warn", label: "Waiting for approval" },
-  merged: { tone: "accent", label: "Approved, applying" },
+  merged: { tone: "accent", label: "Merged, waiting for apply" },
   active: { tone: "ok", label: "Active" },
   rejected: { tone: "crit", label: "Rejected" },
   expired: { tone: "muted", label: "Expired" },
   revoked: { tone: "muted", label: "Revoked" },
-  failed: { tone: "crit", label: "Failed" },
+  failed: { tone: "crit", label: "Not applied" },
 };
 
 export default function AccessPage() {

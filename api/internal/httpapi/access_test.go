@@ -44,6 +44,7 @@ type fakePR struct {
 	State        string
 	Merged       bool
 	HeadSnapshot map[string]string
+	Reviews      []access.Review
 }
 
 func newFakeGitHub(policy string) *fakeGitHub {
@@ -100,6 +101,14 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.prs[n-1].Labels = append(f.prs[n-1].Labels, l.(string))
 		}
 		send(200, []any{})
+	case r.Method == "GET" && strings.HasSuffix(path, "/reviews"):
+		var n int
+		fmt.Sscanf(path, "/pulls/%d/reviews", &n)
+		var out []map[string]any
+		for _, rv := range f.prs[n-1].Reviews {
+			out = append(out, map[string]any{"user": map[string]string{"login": rv.User}, "state": rv.State, "commit_id": rv.CommitID})
+		}
+		send(200, out)
 	case r.Method == "GET" && strings.HasPrefix(path, "/pulls/"):
 		var n int
 		fmt.Sscanf(path, "/pulls/%d", &n)
@@ -113,6 +122,14 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		send(404, map[string]string{"message": "unhandled " + r.Method + " " + path})
 	}
+}
+
+// approve records an approving review by login on pull request n's head commit.
+func (f *fakeGitHub) approve(n int, login string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pr := f.prs[n-1]
+	pr.Reviews = append(pr.Reviews, access.Review{User: login, State: "APPROVED", CommitID: "sha-" + pr.Head})
 }
 
 // merge simulates an admin merging pull request n into main.
@@ -143,6 +160,7 @@ max_days: 30
 max_sudo_days: 7
 admins:
   - {github: admin-gh, email: admin@example.com}
+  - {github: ops-gh, email: ops@example.com}
 `
 
 type accessEnv struct {
@@ -245,7 +263,8 @@ func TestAccessRequestOpensPullRequestAndTracksIt(t *testing.T) {
 		t.Errorf("second open request = %d", r.status)
 	}
 
-	// Merge + apply job publishes status and certificate → request becomes active.
+	// Approve + merge + apply job publishes status and certificate → request becomes active.
+	e.gh.approve(1, "admin-gh")
 	e.gh.merge(1)
 	if err := e.svc.Sync(ctx); err != nil {
 		t.Fatal(err)
@@ -314,6 +333,46 @@ func TestAccessRequestOpensPullRequestAndTracksIt(t *testing.T) {
 	e.pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE action IN ('access.request','access.revoke_requested')`).Scan(&n)
 	if n != 2 {
 		t.Errorf("audit events = %d, want 2", n)
+	}
+}
+
+// GitHub's free plan lets an admin merge without approvals. The dashboard must
+// not call that approved, and must not block the requester forever.
+func TestAccessMergedWithoutApprovalsIsNotApplied(t *testing.T) {
+	e := newAccessEnv(t)
+	ctx := context.Background()
+	hash, _ := auth.HashPassword("ops-password-123")
+	e.pool.Exec(ctx, `INSERT INTO users (email, name, password_hash, role) VALUES ('ops@example.com','Ops',$1,'admin')`, hash)
+	admin := e.client()
+	if r := admin.login("ops@example.com", "ops-password-123"); r.status != 200 {
+		t.Fatalf("login %d", r.status)
+	}
+	r := admin.do("POST", "/api/v1/access/requests", `{"servers":["bm3"],"days":3,"reason":"Deploy a feature to bm3","public_key":"`+pubKey(t)+`"}`)
+	if r.status != 201 {
+		t.Fatalf("create = %d %s", r.status, r.raw)
+	}
+	e.gh.approve(1, "ops-gh") // the requester's own approval
+	e.gh.merge(1)
+	if err := e.svc.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	item := admin.do("GET", "/api/v1/access/requests", "").body["items"].([]any)[0].(map[string]any)
+	detail := fmt.Sprint(item["status_detail"])
+	if item["status"] != "failed" || !strings.Contains(detail, "(0 of 1)") || !strings.Contains(detail, "cannot approve their own request") {
+		t.Fatalf("after self-approved merge: %v", item)
+	}
+	if r := admin.do("POST", "/api/v1/access/requests", `{"servers":["bm3"],"days":3,"reason":"Deploy a feature to bm3","public_key":"`+pubKey(t)+`"}`); r.status != 201 {
+		t.Errorf("new request after a failed one = %d %s", r.status, r.raw)
+	}
+
+	// Revoking it needs one admin approval, and the grant owner's own counts.
+	p, _ := access.ParsePolicy([]byte(testPolicy))
+	g := access.Grant{ID: "0001", Email: "ops@example.com"}
+	if chk := p.CheckPR(&access.File{Grants: []access.Grant{g}}, &access.File{}, access.KindRevoke, time.Now()); chk.RequesterEmail != "" {
+		t.Errorf("revoke requester = %q, want none", chk.RequesterEmail)
+	}
+	if n, _ := p.CountApprovals([]access.Review{{User: "ops-gh", State: "APPROVED", CommitID: "h"}}, "h", ""); n != 1 {
+		t.Errorf("owner approving their own revoke counts %d", n)
 	}
 }
 

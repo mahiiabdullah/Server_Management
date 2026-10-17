@@ -43,7 +43,7 @@ type File struct {
 
 // Server is one entry of the policy's server list.
 type Server struct {
-	Host       string `yaml:"host" json:"host"`             // address reachable from bm2 (WireGuard)
+	Host       string `yaml:"host" json:"host"`             // address reachable from the runner (WireGuard)
 	SSHUser    string `yaml:"ssh_user" json:"-"`            // account the runner uses to apply changes
 	Production bool   `yaml:"production" json:"production"` // production needs two approvals
 }
@@ -105,8 +105,8 @@ func ParsePolicy(data []byte) (*Policy, error) {
 }
 
 const fileHeader = `# SSH access grants. Managed by the BM Monitor dashboard: every change arrives
-# as a pull request, is validated by CI, and is applied from bm2 only after the
-# required admin approvals. Do not edit by hand. See access/README.md.
+# as a pull request, is validated by CI, and is applied by the access-apply job
+# only after the required admin approvals. Do not edit by hand. See docs/ACCESS.md.
 `
 
 // Marshal renders the file in its canonical form (grants sorted by id), so

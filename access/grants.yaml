@@ -1,6 +1,6 @@
 # SSH access grants. Managed by the BM Monitor dashboard: every change arrives
-# as a pull request, is validated by CI, and is applied from bm2 only after the
-# required admin approvals. Do not edit by hand. See access/README.md.
+# as a pull request, is validated by CI, and is applied by the access-apply job
+# only after the required admin approvals. Do not edit by hand. See docs/ACCESS.md.
 grants:
   - id: "0001"
     user: mdmahiabdullah2003

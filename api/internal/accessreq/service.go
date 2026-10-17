@@ -457,13 +457,25 @@ func (s *Service) Sync(ctx context.Context) error {
 			detail = *r.StatusDetail
 		}
 		var cert *string
-		if r.Status == "pr_open" && r.PRNumber != nil {
+		// A merged request is re-checked until it is applied: on the free plan GitHub
+		// lets anyone with write access merge without approvals.
+		if r.PRNumber != nil && (r.Status == "pr_open" || (r.Status == "merged" && r.Kind == "request")) {
 			pr, err := s.gh.GetPR(ctx, *r.PRNumber)
 			if err != nil {
 				s.log.Warn("read pull request", "pr", *r.PRNumber, "err", err)
 				continue
 			}
 			switch {
+			case pr.Merged && r.Kind == "request":
+				short, err := s.approvalShortfall(ctx, r, pr)
+				if err != nil {
+					s.log.Warn("count approvals", "pr", *r.PRNumber, "err", err)
+					continue
+				}
+				status, detail = "merged", "Approved and merged; waiting for the apply job."
+				if short != "" {
+					status, detail = "failed", short
+				}
 			case pr.Merged:
 				status, detail = "merged", "Approved and merged; waiting for the apply job."
 			case pr.State == "closed":
@@ -511,6 +523,33 @@ func (s *Service) Sync(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// approvalShortfall applies the same approval rule as the apply job to a merged
+// request. It returns why the request will not be applied, or "" when it will.
+// Reviews cannot be added after a merge, so a shortfall is final.
+func (s *Service) approvalShortfall(ctx context.Context, r *Request, pr *ghclient.PR) (string, error) {
+	p, err := s.Policy(ctx)
+	if err != nil {
+		return "", err
+	}
+	reviews, err := s.gh.Reviews(ctx, pr.Number)
+	if err != nil {
+		return "", err
+	}
+	need := 1
+	if p.NeedsTwoApprovals(access.Grant{Servers: r.Servers, Sudo: r.Sudo}) {
+		need = 2
+	}
+	n, ignored := p.CountApprovals(reviews, pr.HeadSHA, r.RequesterEmail)
+	if n >= need {
+		return "", nil
+	}
+	msg := fmt.Sprintf("Merged without the required approvals (%d of %d), so it will not be applied.", n, need)
+	if len(ignored) > 0 {
+		msg += " Not counted: " + strings.Join(ignored, ", ") + "."
+	}
+	return msg + " An admin should revoke grant " + r.GrantID + "; then you can request again.", nil
 }
 
 func applyDetail(gs *access.GrantStatus) string {
