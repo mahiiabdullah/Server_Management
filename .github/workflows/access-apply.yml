@@ -1,0 +1,74 @@
+# Applies merged grants. Runs ONLY on the self-hosted runner labelled
+# bm-access (pilot: on bm3, inside WireGuard), ONLY for main. The CA key and deploy key
+# live on that machine (/etc/bm-access), never in GitHub.
+#
+# accessctl apply re-checks every grant against its merged pull request and the
+# admin approvals on its final commit, and refuses anything that was not approved,
+# so a direct push to main cannot grant access.
+name: access-apply
+
+on:
+  push:
+    branches: [main]
+    paths: ["access/grants.yaml", "access/policy.yaml"]
+  schedule:
+    - cron: "17 * * * *" # hourly: expiries, revocations and retries
+  workflow_dispatch:
+
+permissions:
+  contents: write        # push the access-state branch
+  pull-requests: read    # verify approvals
+
+concurrency:
+  group: access-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    # Off until the runner exists: set the repository variable ACCESS_APPLY_ENABLED=true (docs/ACCESS.md).
+    if: github.ref == 'refs/heads/main' && vars.ACCESS_APPLY_ENABLED == 'true'
+    runs-on: [self-hosted, bm-access]
+    timeout-minutes: 15
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Check out the access-state branch
+        run: |
+          git fetch origin access-state:access-state 2>/dev/null || true
+          if git show-ref --quiet refs/heads/access-state; then
+            git worktree add state access-state
+          else
+            git worktree add --detach state
+            git -C state checkout --orphan access-state
+            git -C state rm -rfq . || true
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+
+      - name: Build accessctl
+        working-directory: api
+        run: go build -o "$RUNNER_TEMP/accessctl" ./cmd/accessctl
+
+      - name: Apply grants
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          "$RUNNER_TEMP/accessctl" apply \
+            --grants access/grants.yaml --policy access/policy.yaml \
+            --state-dir state --commit "${{ github.sha }}"
+
+      - name: Publish status and certificates
+        if: always()
+        run: |
+          cd state
+          git config user.name "bm-access"
+          git config user.email "bm-access@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -qm "access state for ${GITHUB_SHA::7}"
+          git push -q origin HEAD:access-state

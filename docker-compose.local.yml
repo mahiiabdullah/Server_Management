@@ -1,0 +1,59 @@
+# Local run on a workstation:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+# Then open http://localhost:8088
+#
+# Differences from production:
+#  - Nginx serves plain HTTP on port 8088 (no certificates needed).
+#  - The workstation is not on the servers' WireGuard network, so a "tunnel" service
+#    keeps SSH forwards open to each server's Node Exporter (127.0.0.1:9100 there).
+#    Nothing is exposed on the servers; the tunnel key is restricted server-side to
+#    that one destination (docs/RUNBOOK.md, "Scraping through SSH tunnels").
+#    Servers are registered in the UI as http://172.30.20.10:<port>/metrics.
+#    Configure in .env:
+#      TUNNELS="19101=root@203.0.113.10 19102=ubuntu@203.0.113.11"
+#      TUNNEL_KEY_FILE=C:/Users/<you>/.ssh/bm_monitor_tunnel
+
+services:
+  api:
+    environment:
+      PUBLIC_URL: http://localhost:8088
+      ALLOWED_TARGET_CIDRS: 172.30.20.10/32
+      ALLOWED_TARGET_PORTS: 19101,19102,19103,19104,19105,19106,19107,19108,19109
+    networks: [backend, egress, tunnels]
+
+  prometheus:
+    networks: [backend, egress, tunnels]
+
+  nginx:
+    ports: !override ["8088:80"]
+    volumes: !override
+      - ./nginx/nginx.local.conf:/etc/nginx/nginx.conf:ro
+
+  tunnel:
+    build: ./deploy/ssh-tunnel
+    environment:
+      TUNNELS: ${TUNNELS:?set TUNNELS in .env}
+    secrets: [tunnel_key]
+    volumes: [tunnel-state:/state]
+    healthcheck:
+      # healthy when every configured local port is listening
+      test: ["CMD-SHELL", "for s in $$TUNNELS; do nc -z 127.0.0.1 $${s%%=*} || exit 1; done"]
+      interval: 15s
+      retries: 3
+      start_period: 20s
+    networks:
+      egress: {}
+      tunnels: {ipv4_address: 172.30.20.10}
+    restart: unless-stopped
+
+secrets:
+  tunnel_key:
+    file: ${TUNNEL_KEY_FILE:?set TUNNEL_KEY_FILE in .env}
+
+networks:
+  tunnels:
+    internal: true
+    ipam: {config: [{subnet: 172.30.20.0/24}]}
+
+volumes:
+  tunnel-state: {}

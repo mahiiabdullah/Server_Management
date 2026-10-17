@@ -1,0 +1,95 @@
+# Checks every pull request that touches access/. Runs on GitHub-hosted
+# runners with a read-only token and no secrets. The checking tool and the
+# policy always come from the target branch (main), never from the pull request,
+# so a pull request cannot weaken the rules it is judged by.
+name: access-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["access/**"]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: access-validate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main (tool + policy)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Check out the pull request (data only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: base/api/go.mod
+          cache-dependency-path: base/api/go.sum
+
+      - name: Build accessctl from main
+        working-directory: base/api
+        run: go build -o "$RUNNER_TEMP/accessctl" ./cmd/accessctl
+
+      - name: Classify the pull request
+        id: kind
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git -C head diff --name-only "$BASE_SHA" HEAD)
+          echo "Changed files:"; echo "$changed"
+          if echo "$LABELS" | grep -q '"access-revoke"'; then kind=revoke
+          elif echo "$LABELS" | grep -q '"access-request"'; then kind=request
+          else kind=other; fi
+          if [ "$kind" != other ] && [ "$(echo "$changed" | grep -vx 'access/grants.yaml' | grep -c .)" != 0 ]; then
+            echo "::error::An access request or revoke may only change access/grants.yaml"; exit 1
+          fi
+          if [ "$kind" = other ] && echo "$changed" | grep -qx 'access/grants.yaml'; then
+            echo "::error::Changes to access/grants.yaml must come from the dashboard (label access-request or access-revoke)"; exit 1
+          fi
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the request against the policy
+        if: steps.kind.outputs.kind != 'other'
+        id: check
+        run: |
+          "$RUNNER_TEMP/accessctl" validate \
+            --policy base/access/policy.yaml \
+            --base base/access/grants.yaml \
+            --head head/access/grants.yaml \
+            --kind "${{ steps.kind.outputs.kind }}"
+
+      - name: Check the changed policy
+        if: steps.kind.outputs.kind == 'other'
+        run: |
+          "$RUNNER_TEMP/accessctl" check-policy --policy head/access/policy.yaml --grants head/access/grants.yaml
+          echo "This pull request changes the access policy. Review it like any security change."
+
+      - name: Admin approvals
+        if: steps.kind.outputs.kind != 'other'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          "$RUNNER_TEMP/accessctl" approvals \
+            --policy base/access/policy.yaml \
+            --pr "${{ github.event.pull_request.number }}" \
+            --required "${{ steps.check.outputs.required_approvals }}" \
+            --requester "${{ steps.check.outputs.requester_email }}"

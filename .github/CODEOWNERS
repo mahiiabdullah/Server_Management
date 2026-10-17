@@ -1,0 +1,8 @@
+# Reviews required for security-sensitive paths (enforced when branch
+# protection is available; the bm2 apply job enforces approvals for grants
+# itself in any case).
+/access/              @mahiiabdullah
+/.github/             @mahiiabdullah
+/deploy/ssh-access/   @mahiiabdullah
+/api/internal/access/ @mahiiabdullah
+/api/cmd/accessctl/   @mahiiabdullah

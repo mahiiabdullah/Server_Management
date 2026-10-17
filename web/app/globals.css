@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/* Design tokens (plan section 12.2). Status is never shown by colour alone. */
+:root {
+  --background: #f7f8fa;
+  --surface: #ffffff;
+  --border: #e3e6eb;
+  --foreground: #14171c;
+  --foreground-muted: #5b6370;
+  --ok: #15803d;
+  --warn: #b45309;
+  --crit: #b91c1c;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  /* Chart series (validated categorical slots 1-3) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --grid: #e8eaee;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: #0d0f13;
+    --surface: #161a20;
+    --border: #262b33;
+    --foreground: #e6e8eb;
+    --foreground-muted: #9aa3ae;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --crit: #f87171;
+    --muted: #9ca3af;
+    --accent: #60a5fa;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --grid: #23272e;
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: #0d0f13;
+  --surface: #161a20;
+  --border: #262b33;
+  --foreground: #e6e8eb;
+  --foreground-muted: #9aa3ae;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --crit: #f87171;
+  --muted: #9ca3af;
+  --accent: #60a5fa;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --grid: #23272e;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-crit: var(--crit);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+  --radius-card: 8px;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

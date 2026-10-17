@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# bm-access-apply: reconciles the Unix accounts managed by the SSH access workflow.
+# Installed by setup-server.sh as /usr/local/sbin/bm-access-apply and reachable
+# only as the forced command of the bm-access-deploy user (from bm2).
+#
+# Input on stdin (from accessctl apply):
+#   BM-ACCESS 1
+#   USER <name> <0|1>      one line per account that must exist (1 = sudo)
+#   KRL <base64>           OpenSSH key revocation list
+#   END
+# Output: one "OK|DISABLED|ERROR|KRL <detail>" line per action.
+#
+# Safety rules:
+#  - It only ever touches accounts in the bm-access group (created by itself).
+#    An existing account outside that group (root, ubuntu, mahi, ...) is never
+#    adopted or changed.
+#  - Removed accounts are disabled (expired, principals removed, sessions ended),
+#    never deleted, so their files stay for review.
+#  - A revocation list is installed only if ssh-keygen can read it, because an
+#    unreadable RevokedKeys file would block every key login on the server.
+#  - Nothing is changed unless the whole input arrived (ends with END).
+set -uo pipefail
+umask 022
+
+GROUP=bm-access
+SUDO_GROUP=bm-sudo
+PRINCIPALS=${BM_ACCESS_PRINCIPALS:-/etc/ssh/principals}
+KRL=${BM_ACCESS_KRL:-/etc/ssh/revoked.krl}
+CA_PUB=${BM_ACCESS_CA_PUB:-/etc/ssh/user_ca.pub}
+NAME_RE='^[a-z][a-z0-9_-]{1,30}$'
+
+[[ $EUID -eq 0 ]] || { echo "ERROR must run as root"; exit 1; }
+
+read -r header || true
+[[ "$header" == "BM-ACCESS 1" ]] || { echo "ERROR bad header"; exit 1; }
+
+declare -A want=()
+krl_b64=""
+complete=0
+while read -r kind a b; do
+  case "$kind" in
+    USER)
+      if [[ ! "$a" =~ $NAME_RE || ! "$b" =~ ^[01]$ ]]; then echo "ERROR invalid line: USER $a $b"; exit 1; fi
+      want["$a"]="$b" ;;
+    KRL) krl_b64="$a" ;;
+    END) complete=1; break ;;
+    "") ;;
+    *) echo "ERROR unknown line: $kind"; exit 1 ;;
+  esac
+done
+[[ $complete -eq 1 ]] || { echo "ERROR input truncated; nothing changed"; exit 1; }
+
+getent group "$GROUP" >/dev/null || groupadd --system "$GROUP"
+getent group "$SUDO_GROUP" >/dev/null || groupadd --system "$SUDO_GROUP"
+install -d -m 0755 "$PRINCIPALS"
+
+rc=0
+for u in "${!want[@]}"; do
+  if id "$u" >/dev/null 2>&1; then
+    if ! id -nG "$u" | tr ' ' '\n' | grep -qx "$GROUP"; then
+      echo "ERROR $u already exists and is not managed by bm-access; refusing to touch it"
+      rc=1; continue
+    fi
+    usermod -e "" "$u"                           # re-enable if it was disabled
+  else
+    useradd --create-home --shell /bin/bash --groups "$GROUP" "$u" || { echo "ERROR useradd $u failed"; rc=1; continue; }
+  fi
+  printf '%s\n' "$u" > "$PRINCIPALS/.$u.tmp" && chmod 0644 "$PRINCIPALS/.$u.tmp" && mv -f "$PRINCIPALS/.$u.tmp" "$PRINCIPALS/$u"
+  if [[ "${want[$u]}" == 1 ]]; then
+    usermod -aG "$SUDO_GROUP" "$u"
+  else
+    gpasswd -d "$u" "$SUDO_GROUP" >/dev/null 2>&1 || true
+  fi
+  echo "OK $u sudo=${want[$u]}"
+done
+
+members=$(getent group "$GROUP" | cut -d: -f4 | tr ',' ' ')
+for u in $members; do
+  [[ -n "${want[$u]+x}" ]] && continue
+  rm -f "$PRINCIPALS/$u"
+  gpasswd -d "$u" "$SUDO_GROUP" >/dev/null 2>&1 || true
+  usermod -e 1 "$u"                              # account expired: no login of any kind
+  pkill -KILL -u "$u" 2>/dev/null || true        # end open sessions
+  echo "DISABLED $u"
+done
+
+if [[ -n "$krl_b64" ]]; then
+  tmp=$(mktemp "$KRL.XXXXXX")
+  ok=0
+  if printf '%s' "$krl_b64" | base64 -d > "$tmp" 2>/dev/null; then
+    ssh-keygen -Q -f "$tmp" "$CA_PUB" >/dev/null 2>&1
+    [[ $? -le 1 ]] && ok=1                       # 0 = not revoked, 1 = revoked; >1 = unreadable
+  fi
+  if [[ $ok -eq 1 ]]; then
+    chmod 0644 "$tmp" && mv -f "$tmp" "$KRL" && echo "KRL installed"
+  else
+    rm -f "$tmp"; echo "ERROR revocation list unreadable; kept the previous one"; rc=1
+  fi
+fi
+exit $rc

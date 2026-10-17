@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+*.md
+tests
+tests-e2e
+test-results
+playwright-report
+playwright.config.ts
+vitest.config.mts

@@ -1,0 +1,105 @@
+name: bm-monitor
+
+# Networks (decision D3):
+#   backend  internal-only, no route out. Every service joins it.
+#   egress   normal bridge. Only Prometheus (scrapes servers), the API (validates
+#            exporters, sends notifications, SSO) and Nginx (publishes 80/443).
+# PostgreSQL and Prometheus publish no host ports.
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: bm
+      POSTGRES_USER: bm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bm -d bm"]
+      interval: 5s
+      retries: 20
+    networks: [backend]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      # No --web.enable-lifecycle: file-based discovery picks up target changes by itself (decision D11).
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - targets:/targets:ro
+      - promdata:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 10s
+      retries: 10
+    networks: [backend, egress]
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://bm:${POSTGRES_PASSWORD}@postgres:5432/bm?sslmode=disable
+      PROMETHEUS_URL: http://prometheus:9090
+      TARGETS_FILE: /targets/fleet.json
+      LISTEN_ADDR: ":8080"
+      # The stack's own networks can never be registered as scrape targets.
+      DENIED_TARGET_CIDRS: 172.30.0.0/24,172.30.1.0/24
+    volumes: [targets:/targets]
+    depends_on:
+      postgres: {condition: service_healthy}
+      prometheus: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "/api", "healthcheck"]
+      interval: 10s
+      retries: 10
+      start_period: 20s
+    networks: [backend, egress]
+    stop_grace_period: 25s
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    environment:
+      API_INTERNAL_URL: http://api:8080
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      retries: 10
+      start_period: 20s
+    networks: [backend]
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.28-alpine
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      web: {condition: service_healthy}
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 15s
+      retries: 5
+    networks: [backend, egress]
+    restart: unless-stopped
+
+networks:
+  backend:
+    internal: true
+    ipam: {config: [{subnet: 172.30.0.0/24}]}
+  egress:
+    ipam: {config: [{subnet: 172.30.1.0/24}]}
+
+volumes:
+  pgdata: {}
+  promdata: {}
+  targets: {} # written by the API, read by Prometheus

@@ -1,0 +1,29 @@
+# SSH access policy. Changes to this file are security changes: they need a
+# normal pull request reviewed by an admin (see .github/CODEOWNERS).
+#
+# servers:  name → address the runner reaches it on (WireGuard), the account the
+#           runner logs in as (forced to run bm-access-apply only), and whether
+#           it is production (production and sudo requests need two approvals).
+#
+# Pilot scope: only bm3 (the testing box). bm1 and bm2 are deliberately not
+# listed: nothing may be requested for them, and the runner never connects to
+# them. Add them only after the pilot, by a reviewed policy change.
+servers:
+  bm3: {host: 10.0.0.13, ssh_user: bm-access-deploy, production: false}
+  # bm1: {host: 10.0.0.11, ssh_user: bm-access-deploy, production: true}
+  # bm2: {host: 10.0.0.12, ssh_user: bm-access-deploy, production: true}
+
+# Longest access a single request may ask for, in days.
+max_days: 30
+max_sudo_days: 7
+
+# People who may approve requests. Their email links the GitHub account to the
+# dashboard account, so nobody can approve their own request. Production and
+# sudo requests need two of them, so keep at least three admins.
+admins:
+  - {github: mahiiabdullah, email: mdmahiabdullah2003@gmail.com}
+
+# Unix names that can never be handed out (in addition to built-in system names):
+# personal accounts that already exist on the servers (mahi and rakib on bm3),
+# which the workflow must never take over, and its own deploy account.
+reserved_users: [mahi, rakib, bm-access-deploy]
