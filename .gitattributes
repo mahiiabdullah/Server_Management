@@ -3,3 +3,6 @@
 *.yml text eol=lf
 *.sql text eol=lf
 Dockerfile text eol=lf
+deploy/ssh-access/* text eol=lf
+*.yaml text eol=lf
+*.py text eol=lf
