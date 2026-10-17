@@ -1,5 +1,6 @@
 # Checks every pull request that touches access/. Runs on GitHub-hosted
-# runners with a read-only token and no secrets. The checking tool and the
+# runners with a read-only token and no secrets (the last job may only re-run
+# this workflow). The checking tool and the
 # policy always come from the target branch (main), never from the pull request,
 # so a pull request cannot weaken the rules it is judged by.
 name: access-validate
@@ -17,7 +18,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: access-validate-${{ github.event.pull_request.number }}
+  # Per event, so re-running the pull_request check cannot cancel the review run.
+  group: access-validate-${{ github.event_name }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -93,3 +95,26 @@ jobs:
             --pr "${{ github.event.pull_request.number }}" \
             --required "${{ steps.check.outputs.required_approvals }}" \
             --requester "${{ steps.check.outputs.requester_email }}"
+
+  # The check that ran when the pull request was opened failed for lack of
+  # approvals, and GitHub keeps showing it next to this one. Once the approvals
+  # are in, re-run it so the pull request does not show a stale failure.
+  rerun-opened-check:
+    needs: validate
+    if: github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run the latest failed pull_request check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json")
+          run=$(curl -fsSL "${auth[@]}" "$api/workflows/access-validate.yml/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=1" |
+            jq -r '.workflow_runs[0] | select(.conclusion == "failure") | .id')
+          if [ -z "$run" ]; then echo "Nothing to re-run."; exit 0; fi
+          echo "Re-running run $run"
+          curl -fsSL -X POST "${auth[@]}" "$api/runs/$run/rerun"
