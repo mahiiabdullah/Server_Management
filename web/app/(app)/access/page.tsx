@@ -185,7 +185,7 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
             });
           }}
         >
-          {blocked && <p className="rounded-card border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">You already have a request waiting for approval.</p>}
+          {blocked && <p className="rounded-card border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">You already have a request in progress (waiting for approval or for the apply job). You can send a new one when it is finished.</p>}
           {(errors._ || errors.form) && (
             <p role="alert" className="rounded-card border border-crit/40 bg-crit/5 px-3 py-2 text-sm text-crit">
               {errors._ || errors.form}

@@ -156,7 +156,7 @@ func (s *Service) Create(ctx context.Context, userID, email string, in Input, ev
 		return nil, err
 	}
 	if open > 0 {
-		return nil, &ConflictError{"You already have a request waiting for approval. Wait for it, or ask an admin to close it."}
+		return nil, &ConflictError{"You already have a request in progress (waiting for approval or for the apply job). Wait for it, or ask an admin to close it."}
 	}
 
 	// Validate the grant before allocating its number, so rejected attempts use none.
