@@ -49,7 +49,10 @@ services:
       LISTEN_ADDR: ":8080"
       # The stack's own networks can never be registered as scrape targets.
       DENIED_TARGET_CIDRS: 172.30.0.0/24,172.30.1.0/24
-    volumes: [targets:/targets]
+    volumes:
+      - targets:/targets
+      # GitHub App key for the SSH access workflow (docs/ACCESS.md). Gitignored.
+      - ./secrets:/run/bm-secrets:ro
     depends_on:
       postgres: {condition: service_healthy}
       prometheus: {condition: service_healthy}

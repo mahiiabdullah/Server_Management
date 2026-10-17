@@ -7,3 +7,4 @@ targets/*.json
 backups/
 *.dump
 .DS_Store
+secrets/

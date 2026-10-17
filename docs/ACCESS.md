@@ -65,23 +65,32 @@ dashboard service in `api/internal/accessreq`, server scripts in `deploy/ssh-acc
 ### 1. GitHub (repository settings)
 
 1. Make sure only admins have write access to the repository.
-2. Create a **fine-grained personal access token** for the dashboard bot:
-   *Repository access: only this repository · Contents: Read and write · Pull requests:
-   Read and write · Metadata: Read · everything else: No access* (especially **not**
-   Workflows). A GitHub App with the same permissions also works (see step 2).
+2. Create the dashboard bot as a **GitHub App**:
+   `python scripts/create-github-app.py mahiiabdullah/Server_Management`, then click
+   *Create GitHub App* and install it on **this repository only**. The App gets
+   *Contents* and *Pull requests* (read and write) and *Metadata* (read), never
+   *Workflows*. Its key is saved to `secrets/gh-app.pem` (gitignored, mounted into the
+   API container) and the script prints the `.env` lines.
+
+   Why an App and not a personal token: pull requests opened with a personal token are
+   authored by the token's owner, and GitHub does not let an author approve their own
+   pull request. If that owner is an admin, their approval can never count. A token
+   works only if it belongs to a separate bot account with the same permissions.
 3. Optional, with GitHub Pro/Team: branch protection on `main` as described above.
 
 ### 2. Dashboard (`.env`)
 
 ```bash
 GITHUB_REPO=mahiiabdullah/Server_Management
-GITHUB_TOKEN=github_pat_…            # from step 1
-# or, as a GitHub App:
-# GITHUB_APP_ID=…  GITHUB_APP_INSTALLATION_ID=…  GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/gh-app.pem
+GITHUB_APP_ID=…                      # printed by the script in step 1
+GITHUB_APP_INSTALLATION_ID=…
+GITHUB_APP_PRIVATE_KEY_FILE=/run/bm-secrets/gh-app.pem
+# or a bot account's token instead: GITHUB_TOKEN=github_pat_…
 ```
 
 Restart the API. The "SSH access" page then lets signed-in users send requests.
-Approvals are given on GitHub by the admins listed in `access/policy.yaml`.
+Approvals are given on GitHub by the admins listed in `access/policy.yaml`. A requester
+never counts as their own approver, so an admin's own request needs another admin.
 
 ### 3. The trusted machine (runner) — changes a machine; only when decided
 
