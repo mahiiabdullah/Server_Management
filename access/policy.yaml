@@ -3,7 +3,7 @@
 #
 # servers:  name → address the runner reaches it on (WireGuard), the account the
 #           runner logs in as (forced to run bm-access-apply only), and whether
-#           it is production (production and sudo requests need two approvals).
+#           it is production (production requests need production_approvals).
 #
 # Pilot scope: only bm3 (the testing box). bm1 and bm2 are deliberately not
 # listed: nothing may be requested for them, and the runner never connects to
@@ -23,9 +23,15 @@ groups: {}
 max_days: 30
 max_sudo_days: 7
 
+# How many admins must approve (never the requester themselves): a request that
+# covers a production server needs production_approvals, a sudo request
+# sudo_approvals, anything else one.
+production_approvals: 1
+sudo_approvals: 2
+
 # People who may approve requests. Their email links the GitHub account to the
-# dashboard account, so nobody can approve their own request. Production and
-# sudo requests need two of them, so keep at least three admins.
+# dashboard account, so nobody can approve their own request. Keep more admins
+# than the largest approval number above, so every request can be approved.
 admins:
   - {github: mahiiabdullah, email: mdmahiabdullah2003@gmail.com}
 

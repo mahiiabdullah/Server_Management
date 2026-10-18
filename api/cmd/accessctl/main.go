@@ -257,8 +257,9 @@ type ghVerifier struct {
 	policy *access.Policy
 }
 
-// Verify requires two approvals for sudo and one otherwise; production servers
-// are then held back per server by the apply engine unless there were two.
+// Verify requires the policy's sudo_approvals for sudo and one otherwise;
+// production servers are then held back per server by the apply engine unless
+// there were production_approvals.
 func (v ghVerifier) Verify(ctx context.Context, g access.Grant) (bool, int, string, error) {
 	prs, err := v.c.PRsForBranch(ctx, "access/request-"+g.ID, "closed")
 	if err != nil {
@@ -294,7 +295,7 @@ func (v ghVerifier) Verify(ctx context.Context, g access.Grant) (bool, int, stri
 		}
 		required := 1
 		if g.Sudo {
-			required = 2
+			required = v.policy.SudoApprovals
 		}
 		n, _ := v.policy.CountApprovals(reviews, pr.HeadSHA, g.Email)
 		if n < required {

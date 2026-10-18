@@ -50,7 +50,7 @@ type File struct {
 type Server struct {
 	Host       string `yaml:"host" json:"host"`             // address reachable from the runner (WireGuard)
 	SSHUser    string `yaml:"ssh_user" json:"-"`            // account the runner uses to apply changes
-	Production bool   `yaml:"production" json:"production"` // production needs two approvals
+	Production bool   `yaml:"production" json:"production"` // production needs production_approvals
 }
 
 // Admin can approve pull requests. Email links the GitHub account to the
@@ -62,12 +62,17 @@ type Admin struct {
 
 // Policy is access/policy.yaml.
 type Policy struct {
-	Servers       map[string]Server   `yaml:"servers" json:"servers"`
-	Groups        map[string][]string `yaml:"groups" json:"groups"` // access group → server names
-	MaxDays       int                 `yaml:"max_days" json:"max_days"`
-	MaxSudoDays   int                 `yaml:"max_sudo_days" json:"max_sudo_days"`
-	Admins        []Admin             `yaml:"admins" json:"admins"`
-	ReservedUsers []string            `yaml:"reserved_users" json:"-"`
+	Servers map[string]Server   `yaml:"servers" json:"servers"`
+	Groups  map[string][]string `yaml:"groups" json:"groups"` // access group → server names
+	MaxDays int                 `yaml:"max_days" json:"max_days"`
+	// Admins who must approve: a request covering a production server needs
+	// ProductionApprovals, a sudo request SudoApprovals, anything else one.
+	// Both default to 2 when left out.
+	ProductionApprovals int      `yaml:"production_approvals" json:"production_approvals"`
+	SudoApprovals       int      `yaml:"sudo_approvals" json:"sudo_approvals"`
+	MaxSudoDays         int      `yaml:"max_sudo_days" json:"max_sudo_days"`
+	Admins              []Admin  `yaml:"admins" json:"admins"`
+	ReservedUsers       []string `yaml:"reserved_users" json:"-"`
 }
 
 func strictDecode(data []byte, v any) error {
@@ -106,6 +111,14 @@ func ParsePolicy(data []byte) (*Policy, error) {
 		return nil, fmt.Errorf("%s: max_sudo_days must be 1..max_days", PolicyPath)
 	case len(p.Admins) == 0:
 		return nil, fmt.Errorf("%s: at least one admin is required", PolicyPath)
+	}
+	for _, n := range []*int{&p.ProductionApprovals, &p.SudoApprovals} {
+		if *n == 0 {
+			*n = 2
+		}
+		if *n < 1 || *n > 5 {
+			return nil, fmt.Errorf("%s: production_approvals and sudo_approvals must be 1..5", PolicyPath)
+		}
 	}
 	for name, servers := range p.Groups {
 		if !groupNameRe.MatchString(name) {
@@ -194,18 +207,20 @@ func (f *File) Find(id string) *Grant {
 // Active reports whether g is in force at t.
 func (g Grant) Active(t time.Time) bool { return !t.Before(g.RequestedAt) && t.Before(g.Expires) }
 
-// NeedsTwoApprovals reports whether adding or changing g needs two admins:
-// sudo, or any production server it covers (directly or through a group).
-func (p *Policy) NeedsTwoApprovals(g Grant) bool {
+// RequiredApprovals is how many admins must approve g: one, or the policy's
+// production number if it covers a production server (directly or through a
+// group), or its sudo number for sudo, whichever is highest.
+func (p *Policy) RequiredApprovals(g Grant) int {
+	n := 1
 	if g.Sudo {
-		return true
+		n = max(n, p.SudoApprovals)
 	}
 	for _, s := range p.ServersOf(g) {
 		if p.Servers[s].Production {
-			return true
+			n = max(n, p.ProductionApprovals)
 		}
 	}
-	return false
+	return n
 }
 
 // AdminByGitHub returns the admin with that GitHub login, or nil.

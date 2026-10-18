@@ -18,6 +18,8 @@ type Config =
       groups: { name: string; servers: string[]; production: boolean }[];
       max_days: number;
       max_sudo_days: number;
+      production_approvals: number;
+      sudo_approvals: number;
       admins: number;
       unix_user: string;
       unix_user_error?: string;
@@ -175,8 +177,9 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState<AccessRequest | null>(null);
   const max = sudo ? cfg.max_sudo_days : cfg.max_days;
-  const needsTwo =
-    sudo || (mode === "servers" ? servers.some((s) => cfg.servers.find((x) => x.name === s)?.production) : groups.some((g) => cfg.groups.find((x) => x.name === g)?.production));
+  const production = mode === "servers" ? servers.some((s) => cfg.servers.find((x) => x.name === s)?.production) : groups.some((g) => cfg.groups.find((x) => x.name === g)?.production);
+  const required = Math.max(1, sudo ? cfg.sudo_approvals : 1, production ? cfg.production_approvals : 1);
+  const admins = (n: number) => (n === 1 ? "one admin approval" : `${n} admin approvals`);
   const chosen = mode === "servers" ? servers.length : groups.length;
 
   const create = useWrite(
@@ -198,7 +201,7 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
             <a href={done.pr_url ?? "#"} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               #{done.pr_number}
             </a>{" "}
-            is waiting for {needsTwo ? "two admins" : "an admin"} to approve it. This page updates by itself once access is granted.
+            is waiting for {admins(required)}. This page updates by itself once access is granted.
           </p>
           <Button onClick={() => (setDone(null), setKey(""), setReason(""), setServers([]), setGroups([]))}>New request</Button>
         </div>
@@ -287,7 +290,7 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
             <span>
               I need sudo (root) on these servers
               <span className="block text-xs text-foreground-muted">
-                {mode === "groups" ? "Not available for groups: request sudo for specific servers." : `Needs two admin approvals and at most ${cfg.max_sudo_days} days.`}
+                {mode === "groups" ? "Not available for groups: request sudo for specific servers." : `Needs ${admins(cfg.sudo_approvals)} and at most ${cfg.max_sudo_days} days.`}
               </span>
               {errors.sudo && <span className="block text-xs text-crit">{errors.sudo}</span>}
             </span>
@@ -311,7 +314,7 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
             {(id) => <Textarea id={id} value={key} onChange={(e) => setKey(e.target.value)} className="font-mono text-xs" placeholder="ssh-ed25519 AAAA… you@laptop" />}
           </Field>
           <p className="text-xs text-foreground-muted">
-            {needsTwo ? "This request needs two admin approvals." : "This request needs one admin approval."} You cannot approve your own request.
+            This request needs {admins(required)}. You cannot approve your own request.
           </p>
           <Button type="submit" variant="primary" disabled={create.isPending || blocked || chosen === 0}>
             {create.isPending ? "Opening pull request…" : "Send request"}

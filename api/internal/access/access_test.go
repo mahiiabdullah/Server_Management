@@ -271,12 +271,12 @@ func TestGroupRules(t *testing.T) {
 	if got := strings.Join(p.ServersOf(g), ","); got != "bm1,bm3,bm4" {
 		t.Errorf("servers of = %s", got)
 	}
-	if !p.NeedsTwoApprovals(g) {
-		t.Error("a group with a production server must need two approvals")
+	if p.RequiredApprovals(g) != 2 {
+		t.Error("a group with a production server must need production_approvals (default 2)")
 	}
 	g.Groups = []string{"puku-bot"}
-	if p.NeedsTwoApprovals(g) || len(p.ValidateGrant(g, now, true)) != 0 {
-		t.Errorf("valid group grant: two=%v problems=%v", p.NeedsTwoApprovals(g), p.ValidateGrant(g, now, true))
+	if p.RequiredApprovals(g) != 1 || len(p.ValidateGrant(g, now, true)) != 0 {
+		t.Errorf("valid group grant: approvals=%d problems=%v", p.RequiredApprovals(g), p.ValidateGrant(g, now, true))
 	}
 	for name, mutate := range map[string]func(*Grant){
 		"sudo on a group": func(x *Grant) { x.Sudo = true; x.Expires = now.Add(24 * time.Hour) },

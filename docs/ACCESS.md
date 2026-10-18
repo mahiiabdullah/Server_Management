@@ -47,9 +47,11 @@ dashboard service in `api/internal/accessreq`, server scripts in `deploy/ssh-acc
   removed loses the account. Changing a group is a change to `access/policy.yaml`,
   so it is a reviewed pull request (the dashboard opens it, labelled
   `access-policy`). Sudo cannot be requested for a group.
-- **Production needs two approvals, per server.** The apply job reaches a
-  production server only for grants approved by two admins. If a group later gains
-  a production server, grants approved by one admin are not applied there (their
+- **Approval numbers are set in the policy.** `production_approvals` (now 1) is how
+  many admins must approve a request that covers a production server;
+  `sudo_approvals` (now 2) is for sudo; anything else needs one. Left out, both are 2.
+  The apply job enforces the production number per server: if a group later gains
+  a production server, grants with fewer approvals are not applied there (their
   other servers keep working) and the dashboard says why.
 - **Policy changes can be enforced too (optional).** With the repository variable
   `ACCESS_VERIFY_POLICY=true`, the apply job only uses a policy that came from a
@@ -143,8 +145,9 @@ certificate login alongside existing logins and touches nothing else (see its he
 
 ### 5. Policy
 
-List only servers that went through step 4 in `access/policy.yaml`. Production and
-sudo requests need two admins, so add at least two more admins before allowing them.
+List only servers that went through step 4 in `access/policy.yaml`. Nobody can approve
+their own request, so keep more admins than the largest of `production_approvals` and
+`sudo_approvals` (with sudo at 2, that is at least three admins before allowing sudo).
 
 ### 6. Access groups
 

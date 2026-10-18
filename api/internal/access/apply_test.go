@@ -228,3 +228,35 @@ func TestGroupGrantFollowsTheGroup(t *testing.T) {
 		t.Fatalf("two approvals: bm1=%v %+v", remote.applied["bm1"], res.Status.Grants["0050"])
 	}
 }
+
+func TestApprovalNumbersComeFromThePolicy(t *testing.T) {
+	p := groupPolicy(t, "  ops: [bm1, bm3]\n")
+	p.ProductionApprovals, p.SudoApprovals = 1, 2
+	g := grant(t, "0070", "rakib@example.com", "bm1")
+	if n := p.RequiredApprovals(g); n != 1 {
+		t.Errorf("production with production_approvals 1 needs %d", n)
+	}
+	g.Sudo, g.Expires = true, now.Add(24*time.Hour)
+	if n := p.RequiredApprovals(g); n != 2 {
+		t.Errorf("sudo needs %d, want 2", n)
+	}
+	// The apply engine reaches production with one approval when the policy says 1.
+	og := grant(t, "0071", "rakib@example.com")
+	og.Groups = []string{"ops"}
+	remote := &fakeRemote{applied: map[string][]Account{}, fail: map[string]bool{}}
+	res, err := Apply(context.Background(), ApplyInput{File: &File{Grants: []Grant{og}}, Policy: p, CA: newCA(t),
+		Verifier: fakeVerifier{"0071": 1}, Remote: remote, KRL: fakeKRL, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if users(remote.applied["bm1"]) != "rakib" || res.Status.Grants["0071"].Servers["bm1"] != "ok" {
+		t.Fatalf("bm1=%v status=%+v", remote.applied["bm1"], res.Status.Grants["0071"])
+	}
+	// Left out of the file, both numbers default to 2.
+	if d := policy(); d.ProductionApprovals != 2 || d.SudoApprovals != 2 {
+		t.Errorf("defaults = %d, %d", d.ProductionApprovals, d.SudoApprovals)
+	}
+	if _, err := ParsePolicy([]byte("servers: {bm3: {host: h}}\nmax_days: 3\nmax_sudo_days: 1\nadmins: [{github: a, email: a@b.io}]\nproduction_approvals: 9\n")); err == nil {
+		t.Error("production_approvals 9 accepted")
+	}
+}

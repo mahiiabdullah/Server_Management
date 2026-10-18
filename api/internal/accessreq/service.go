@@ -566,8 +566,8 @@ func (s *Service) Sync(ctx context.Context) error {
 }
 
 // approvalShortfall applies the same approval rule as the apply job to a merged
-// request: sudo needs two approvals, anything else one, and production servers
-// are only reached with two. It returns why the request will not be applied at
+// request: sudo needs sudo_approvals, anything else one, and production servers
+// are only reached with production_approvals. It returns why the request will not be applied at
 // all ("" when it will), and a note about production servers it will skip.
 // Reviews cannot be added after a merge, so a shortfall is final.
 func (s *Service) approvalShortfall(ctx context.Context, r *Request, pr *ghclient.PR) (short, note string, err error) {
@@ -583,7 +583,7 @@ func (s *Service) approvalShortfall(ctx context.Context, r *Request, pr *ghclien
 	n, ignored := p.CountApprovals(reviews, pr.HeadSHA, r.RequesterEmail)
 	need := 1
 	if g.Sudo {
-		need = 2
+		need = p.SudoApprovals
 	}
 	var prod, other []string
 	for _, srv := range p.ServersOf(g) {
@@ -593,8 +593,8 @@ func (s *Service) approvalShortfall(ctx context.Context, r *Request, pr *ghclien
 			other = append(other, srv)
 		}
 	}
-	if n >= need && n < 2 && len(other) == 0 && len(prod) > 0 {
-		need = 2 // it covers only production servers
+	if n >= need && n < p.ProductionApprovals && len(other) == 0 && len(prod) > 0 {
+		need = p.ProductionApprovals // it covers only production servers
 	}
 	if n < need {
 		msg := fmt.Sprintf("Merged without the required approvals (%d of %d), so it will not be applied.", n, need)
@@ -603,8 +603,8 @@ func (s *Service) approvalShortfall(ctx context.Context, r *Request, pr *ghclien
 		}
 		return msg + " An admin should revoke grant " + r.GrantID + "; then you can request again.", "", nil
 	}
-	if n < 2 && len(prod) > 0 {
-		note = fmt.Sprintf(" It will not be applied on %s: production needs 2 admin approvals.", strings.Join(prod, ", "))
+	if n < p.ProductionApprovals && len(prod) > 0 {
+		note = fmt.Sprintf(" It will not be applied on %s: production needs %d admin approvals.", strings.Join(prod, ", "), p.ProductionApprovals)
 	}
 	return "", note, nil
 }

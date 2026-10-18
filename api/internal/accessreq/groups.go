@@ -48,6 +48,7 @@ type GroupAccess struct {
 	Production    []string  `json:"production"`     // production servers among wanted
 	InSync        bool      `json:"in_sync"`
 	Grants        []string  `json:"grants"` // grants (id and user) that use the group
+	ProdApprovals int       `json:"production_approvals"`
 	Proposal      *Proposal `json:"proposal"`
 	NameAllowed   bool      `json:"name_allowed"`
 }
@@ -63,6 +64,7 @@ func (s *Service) GroupAccess(ctx context.Context, name string, dashboardServers
 	}
 	out := &GroupAccess{Enabled: true, PolicyServers: []string{}, Wanted: []string{}, NotReady: []string{}, Production: []string{}, Grants: []string{}}
 	out.NameAllowed = policyNameOK(name)
+	out.ProdApprovals = p.ProductionApprovals
 	cur, ok := p.Groups[name]
 	out.InPolicy = ok
 	out.PolicyServers = append(out.PolicyServers, cur...)
@@ -191,8 +193,10 @@ func proposalBody(name string, ga *GroupAccess, email string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Sets SSH access group **%s** in `%s`, to match the dashboard group of the same name.\n\n", name, access.PolicyPath)
 	fmt.Fprintf(&b, "| | |\n|---|---|\n| Servers after | %s |\n| Added | %s |\n| Removed | %s |\n", orNone(ga.Wanted), orNone(added), orNone(removed))
-	if len(ga.Production) > 0 {
-		fmt.Fprintf(&b, "| Production | %s (grants approved by one admin are not applied there) |\n", strings.Join(ga.Production, ", "))
+	if len(ga.Production) > 0 && ga.ProdApprovals > 1 {
+		fmt.Fprintf(&b, "| Production | %s (grants with fewer than %d admin approvals are not applied there) |\n", strings.Join(ga.Production, ", "), ga.ProdApprovals)
+	} else if len(ga.Production) > 0 {
+		fmt.Fprintf(&b, "| Production | %s |\n", strings.Join(ga.Production, ", "))
 	}
 	if len(ga.NotReady) > 0 {
 		fmt.Fprintf(&b, "| Not included | %s: not in the policy's server list yet (server setup not done) |\n", strings.Join(ga.NotReady, ", "))

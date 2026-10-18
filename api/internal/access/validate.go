@@ -341,9 +341,7 @@ func (p *Policy) CheckPR(base, head *File, kind string, now time.Time) PRCheck {
 		g := c.Added[0]
 		res.GrantID, res.RequesterEmail = g.ID, g.Email
 		res.Problems = append(res.Problems, p.ValidateGrant(g, now, true)...)
-		if p.NeedsTwoApprovals(g) {
-			res.RequiredApprovals = 2
-		}
+		res.RequiredApprovals = p.RequiredApprovals(g)
 	case KindRevoke:
 		if len(c.Added) > 0 || len(c.Changed) > 0 {
 			fail("a revoke must only remove a grant")

@@ -59,7 +59,8 @@ func (a *API) accessConfig(w http.ResponseWriter, r *http.Request) {
 	u := auth.UserFrom(r.Context())
 	unix, uerr := access.UsernameFromEmail(u.Email)
 	out := map[string]any{"enabled": true, "repo": a.access.Repo(), "servers": servers, "groups": accessreq.ConfigGroups(p),
-		"max_days": p.MaxDays, "max_sudo_days": p.MaxSudoDays, "admins": len(p.Admins), "unix_user": unix}
+		"max_days": p.MaxDays, "max_sudo_days": p.MaxSudoDays, "admins": len(p.Admins), "unix_user": unix,
+		"production_approvals": p.ProductionApprovals, "sudo_approvals": p.SudoApprovals}
 	if uerr != nil {
 		out["unix_user_error"] = uerr.Error()
 	}

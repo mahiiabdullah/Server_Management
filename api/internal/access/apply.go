@@ -19,8 +19,8 @@ import (
 // because a free GitHub plan cannot enforce branch protection on private repos.
 //
 // Group grants follow their group. If a group later gains a production server,
-// a grant approved by only one admin is not applied there (production needs
-// two); its other servers keep working.
+// a grant with fewer approvals than the policy's production_approvals is not
+// applied there; its other servers keep working.
 
 // State is persisted between runs on the access-state branch.
 type State struct {
@@ -155,17 +155,19 @@ func Apply(ctx context.Context, in ApplyInput) (*ApplyResult, error) {
 		}
 	}
 
-	// Servers each grant may reach now: production needs two approvals, even if
-	// a group only gained a production server after the grant was approved.
+	// Servers each grant may reach now: production needs production_approvals,
+	// even if a group only gained a production server after the grant was approved.
+	prodNeed := in.Policy.ProductionApprovals
+	prodWhy := fmt.Sprintf("not applied: production needs %d admin approvals; open a new request", prodNeed)
 	held := map[string]map[string]string{} // grant → server → why not applied
 	allowed := func(g Grant) []string {
 		var out []string
 		for _, s := range in.Policy.ServersOf(g) {
-			if in.Policy.Servers[s].Production && st.Approvals[g.ID] < 2 {
+			if in.Policy.Servers[s].Production && st.Approvals[g.ID] < prodNeed {
 				if held[g.ID] == nil {
 					held[g.ID] = map[string]string{}
 				}
-				held[g.ID][s] = "not applied: production needs 2 admin approvals; open a new request"
+				held[g.ID][s] = prodWhy
 				continue
 			}
 			out = append(out, s)
@@ -177,7 +179,7 @@ func Apply(ctx context.Context, in ApplyInput) (*ApplyResult, error) {
 	for _, g := range effective {
 		allowedOf[g.ID] = allowed(g)
 		if len(allowedOf[g.ID]) == 0 && len(held[g.ID]) > 0 {
-			res.Status.Grants[g.ID] = GrantStatus{Status: "awaiting_approval", Reason: "every server it covers is production now, which needs 2 admin approvals",
+			res.Status.Grants[g.ID] = GrantStatus{Status: "awaiting_approval", Reason: fmt.Sprintf("every server it covers is production now, which needs %d admin approvals", prodNeed),
 				Servers: held[g.ID]}
 			continue
 		}
