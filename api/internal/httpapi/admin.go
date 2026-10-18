@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/mail"
 	"net/url"
 	"strings"
 	"time"
@@ -55,129 +54,6 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 	ev.Action, ev.TargetType, ev.TargetID = "user.password_change", "user", u.ID
 	_ = recordAudit(r.Context(), a, ev)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// ---- users ----
-
-func (a *API) listUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := a.auth.ListAccounts(r.Context())
-	if err != nil {
-		fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": users, "sso_enabled": a.cfg.GoogleSSO()})
-}
-
-func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Email    string `json:"email"`
-		Name     string `json:"name"`
-		Role     string `json:"role"`
-		Password string `json:"password"`
-	}
-	if err := decodeJSON(w, r, &req); err != nil {
-		fail(w, r, err)
-		return
-	}
-	f := map[string]string{}
-	req.Email, req.Name = strings.TrimSpace(req.Email), strings.TrimSpace(req.Name)
-	if _, err := mail.ParseAddress(req.Email); err != nil || len(req.Email) > 254 {
-		f["email"] = "Enter a valid email address."
-	}
-	if req.Name == "" || len(req.Name) > 80 {
-		f["name"] = "Use 1–80 characters."
-	}
-	if !auth.Role(req.Role).Valid() {
-		f["role"] = "Use admin, operator or viewer."
-	}
-	if req.Password == "" && !a.cfg.GoogleSSO() {
-		f["password"] = "Required (Google sign-in is not configured)."
-	} else if req.Password != "" && len(req.Password) < 12 {
-		f["password"] = "Use at least 12 characters."
-	}
-	if len(f) > 0 {
-		fail(w, r, errValidation(f))
-		return
-	}
-	acc, err := a.auth.CreateAccount(r.Context(), req.Email, req.Name, auth.Role(req.Role), req.Password)
-	if errors.Is(err, auth.ErrEmailTaken) {
-		fail(w, r, &APIError{Status: http.StatusConflict, Code: "conflict", Message: err.Error(), Fields: map[string]string{"email": err.Error()}})
-		return
-	}
-	if err != nil {
-		fail(w, r, err)
-		return
-	}
-	ev := a.event(r)
-	ev.Action, ev.TargetType, ev.TargetID, ev.After = "user.create", "user", acc.ID, acc
-	_ = recordAudit(r.Context(), a, ev)
-	writeJSON(w, http.StatusCreated, acc)
-}
-
-func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
-	id, ok := idParam(r, "id")
-	if !ok {
-		fail(w, r, errNotFound)
-		return
-	}
-	var req struct {
-		Name     *string `json:"name"`
-		Role     *string `json:"role"`
-		Disabled *bool   `json:"disabled"`
-		Password *string `json:"password"`
-		Unlock   bool    `json:"unlock"`
-	}
-	if err := decodeJSON(w, r, &req); err != nil {
-		fail(w, r, err)
-		return
-	}
-	f := map[string]string{}
-	p := auth.AccountPatch{Name: req.Name, Disabled: req.Disabled, Password: req.Password, Unlock: req.Unlock}
-	if req.Name != nil && (strings.TrimSpace(*req.Name) == "" || len(*req.Name) > 80) {
-		f["name"] = "Use 1–80 characters."
-	}
-	if req.Role != nil {
-		role := auth.Role(*req.Role)
-		if !role.Valid() {
-			f["role"] = "Use admin, operator or viewer."
-		}
-		p.Role = &role
-	}
-	if req.Password != nil && len(*req.Password) < 12 {
-		f["password"] = "Use at least 12 characters."
-	}
-	me := auth.UserFrom(r.Context())
-	if id == me.ID && ((req.Disabled != nil && *req.Disabled) || (req.Role != nil && *req.Role != string(auth.RoleAdmin))) {
-		f["role"] = "You cannot disable or demote yourself."
-	}
-	if len(f) > 0 {
-		fail(w, r, errValidation(f))
-		return
-	}
-	before, err := a.auth.GetAccount(r.Context(), id)
-	if err != nil {
-		fail(w, r, errNotFound)
-		return
-	}
-	acc, err := a.auth.UpdateAccount(r.Context(), id, p)
-	switch {
-	case errors.Is(err, auth.ErrLastAdmin):
-		fail(w, r, &APIError{Status: http.StatusConflict, Code: "last_admin", Message: err.Error()})
-		return
-	case errors.Is(err, auth.ErrNoSession):
-		fail(w, r, errNotFound)
-		return
-	case err != nil:
-		fail(w, r, err)
-		return
-	}
-	ev := a.event(r)
-	ev.Action, ev.TargetType, ev.TargetID, ev.Before, ev.After = "user.update", "user", id, before, acc
-	if req.Password != nil {
-		ev.Action = "user.password_reset"
-	}
-	_ = recordAudit(r.Context(), a, ev)
-	writeJSON(w, http.StatusOK, acc)
 }
 
 // ---- settings ----

@@ -254,6 +254,18 @@ export const GroupDetail = z.object({
   cost: GroupCost.nullable(),
   currency: z.string(),
   costs_configured: z.boolean(),
+  people: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      email: z.string().optional(),
+      kind: z.string(),
+      disabled: z.boolean(),
+      muted: z.boolean(),
+      min_severity: z.string(),
+      paused_until: iso.nullable(),
+    }),
+  ),
 });
 export type GroupDetail = z.infer<typeof GroupDetail>;
 

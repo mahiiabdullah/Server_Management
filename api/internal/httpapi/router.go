@@ -51,12 +51,14 @@ type API struct {
 	costs        *cost.Store
 	alerts       *alerts.Store
 	senders      *alerts.Senders
+	links        *alerts.Links
 	insights     *insights.Service
 	access       *accessreq.Service
 	publicOrigin string
 
 	loginLimiter    *ipLimiter
 	registerLimiter *ipLimiter
+	linkLimiter     *ipLimiter
 
 	snapMu  sync.Mutex
 	snapAt  time.Time
@@ -80,6 +82,7 @@ func New(d Deps) *API {
 		costs:        costs,
 		alerts:       alerts.NewStore(d.Pool),
 		senders:      alerts.NewSenders(d.Config),
+		links:        alerts.NewLinks(d.Config.SessionSecret),
 		insights:     insights.New(d.Pool, d.Prom, inv, costs),
 		access:       d.Access,
 		publicOrigin: d.Config.PublicURL.Scheme + "://" + d.Config.PublicURL.Host,
@@ -87,6 +90,8 @@ func New(d Deps) *API {
 		loginLimiter: newIPLimiter(3*time.Minute, 5),
 		// Endpoint checks make outbound connections: 30 per IP, then one every 20 s.
 		registerLimiter: newIPLimiter(20*time.Second, 30),
+		// Pause links from alert emails: 20 per IP, then one every 30 s.
+		linkLimiter: newIPLimiter(30*time.Second, 20),
 	}
 }
 
@@ -134,12 +139,17 @@ func (a *API) Handler() http.Handler {
 		r.Get("/auth/providers", a.authProviders)
 		r.With(a.loginLimiter.middleware).Get("/auth/google", a.googleStart)
 		r.Get("/auth/google/callback", a.googleCallback)
+		// Pause links in alert emails: the signed token is the credential (contacts cannot sign in).
+		r.With(a.linkLimiter.middleware).Get("/alert-links", a.alertLinkInfo)
+		r.With(a.linkLimiter.middleware).Post("/alert-links", a.applyAlertLink)
 
 		r.Group(func(r chi.Router) {
 			r.Use(viewer)
 			r.Post("/auth/logout", a.logout)
 			r.Get("/me", a.me)
 			r.Post("/me/password", a.changePassword)
+			r.Get("/me/alerts", a.myAlerts)
+			r.Patch("/me/alerts", a.updateMyAlerts)
 
 			r.Get("/fleet/summary", a.fleetSummary)
 
@@ -160,6 +170,7 @@ func (a *API) Handler() http.Handler {
 			r.With(operator).Post("/groups", a.createGroup)
 			r.With(operator).Patch("/groups/{id}", a.updateGroup)
 			r.With(operator).Put("/groups/{id}/servers", a.setGroupServers)
+			r.With(admin).Put("/groups/{id}/people", a.setGroupPeople)
 			r.With(admin).Delete("/groups/{id}", a.deleteGroup)
 
 			r.Get("/pricing-plans", a.listPlans)
@@ -175,6 +186,7 @@ func (a *API) Handler() http.Handler {
 
 			r.Get("/alerts", a.listAlerts)
 			r.With(operator).Post("/alerts/{id}/ack", a.ackAlert)
+			r.With(operator).Get("/alerts/{id}/deliveries", a.alertDeliveries)
 			r.Get("/alert-rules", a.listRules)
 			r.With(admin).Post("/alert-rules", a.createRule)
 			r.With(admin).Patch("/alert-rules/{id}", a.updateRule)

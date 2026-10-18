@@ -370,11 +370,7 @@ func (e *Evaluator) persist(ctx context.Context, r Rule, fp, id string, c condit
 		}
 	}
 	if act.Notify != "" {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO notifications (alert_id, channel_id, event, status)
-			SELECT $1, c.id, $2, 'queued' FROM notification_channels c
-			WHERE c.enabled AND (CASE c.min_severity WHEN 'info' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END) <= $3`,
-			id, act.Notify, severityRank[r.Severity]); err != nil {
+		if err := queue(ctx, tx, id, r.Severity, act.Notify); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE alerts SET last_notified_at = $2 WHERE id = $1`, id, now); err != nil {

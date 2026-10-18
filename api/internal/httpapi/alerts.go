@@ -218,6 +218,7 @@ type channelRequest struct {
 	Config      alerts.ChannelConfig `json:"config"`
 	MinSeverity string               `json:"min_severity"`
 	Enabled     *bool                `json:"enabled"`
+	GroupIDs    []string             `json:"group_ids"` // empty = every alert
 }
 
 func (a *API) saveChannel(w http.ResponseWriter, r *http.Request, id string) {
@@ -264,13 +265,21 @@ func (a *API) saveChannel(w http.ResponseWriter, r *http.Request, id string) {
 	if req.Kind != "telegram" {
 		req.Config.ChatID = ""
 	}
+	groupIDs, msg, err := a.checkGroupIDs(r.Context(), req.GroupIDs)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if msg != "" {
+		f["group_ids"] = msg
+	}
 	if len(f) > 0 {
 		fail(w, r, errValidation(f))
 		return
 	}
 	enabled := req.Enabled == nil || *req.Enabled
 	c, err := a.alerts.SaveChannel(r.Context(), id, alerts.Channel{Kind: req.Kind, Name: req.Name, Config: req.Config,
-		MinSeverity: req.MinSeverity, Enabled: enabled}, a.event(r))
+		MinSeverity: req.MinSeverity, Enabled: enabled, GroupIDs: groupIDs}, a.event(r))
 	if err != nil {
 		fail(w, r, err)
 		return

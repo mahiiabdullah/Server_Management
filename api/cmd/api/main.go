@@ -86,7 +86,7 @@ func run() error {
 	}
 	api := httpapi.New(httpapi.Deps{Config: cfg, Pool: pool, Auth: authSvc, Prom: prom, Targets: tw, Log: log, Access: accessSvc})
 	evaluator := alerts.NewEvaluator(pool, prom, api.Inventory(), api.Costs(), log.With("worker", "alerts"))
-	notifier := alerts.NewNotifier(pool, alerts.NewSenders(cfg), cfg.PublicURL.String(), log.With("worker", "notifier"))
+	notifier := alerts.NewNotifier(pool, alerts.NewSenders(cfg), alerts.NewLinks(cfg.SessionSecret), cfg.PublicURL.String(), log.With("worker", "notifier"))
 
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	var workers sync.WaitGroup

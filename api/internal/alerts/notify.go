@@ -201,13 +201,18 @@ func truncate(s string, n int) string {
 type Notifier struct {
 	pool      *pgxpool.Pool
 	senders   *Senders
+	links     *Links
 	log       *slog.Logger
 	publicURL string
+	now       func() time.Time
 }
 
-func NewNotifier(pool *pgxpool.Pool, senders *Senders, publicURL string, log *slog.Logger) *Notifier {
-	return &Notifier{pool: pool, senders: senders, publicURL: strings.TrimRight(publicURL, "/"), log: log}
+func NewNotifier(pool *pgxpool.Pool, senders *Senders, links *Links, publicURL string, log *slog.Logger) *Notifier {
+	return &Notifier{pool: pool, senders: senders, links: links, publicURL: strings.TrimRight(publicURL, "/"), log: log, now: time.Now}
 }
+
+// Flush sends every notification that is due now. Exposed for tests.
+func (n *Notifier) Flush(ctx context.Context) error { return n.flush(ctx) }
 
 const maxAttempts = 5
 
@@ -232,6 +237,10 @@ type pending struct {
 	attempts                   int
 	kind                       string
 	cfg                        ChannelConfig
+	userID                     *string // set when the notification goes to one person
+	userDisabled               bool
+	alertsAll                  bool
+	reason                     *string // the person's groups that contain the server
 	ruleName, severity, msg    string
 	state                      string
 	serverName                 *string
@@ -247,9 +256,18 @@ func (n *Notifier) flush(ctx context.Context) error {
 		  SELECT id FROM notifications WHERE status = 'queued' AND next_try_at <= now()
 		  ORDER BY id LIMIT 20 FOR UPDATE SKIP LOCKED)
 		UPDATE notifications nt SET next_try_at = now() + interval '2 minutes'
-		FROM due, alerts a, alert_rules r, notification_channels c
-		WHERE nt.id = due.id AND a.id = nt.alert_id AND r.id = a.rule_id AND c.id = nt.channel_id
-		RETURNING nt.id, nt.event, nt.attempts, c.kind, c.config, r.name, a.severity, a.message, a.state,
+		FROM due, alerts a, alert_rules r
+		WHERE nt.id = due.id AND a.id = nt.alert_id AND r.id = a.rule_id
+		RETURNING nt.id, nt.event, nt.attempts,
+		  coalesce((SELECT kind FROM notification_channels WHERE id = nt.channel_id), 'email'),
+		  coalesce((SELECT config FROM notification_channels WHERE id = nt.channel_id),
+		           (SELECT jsonb_build_object('to', jsonb_build_array(email)) FROM users WHERE id = nt.user_id)),
+		  nt.user_id::text, coalesce((SELECT disabled FROM users WHERE id = nt.user_id), false),
+		  coalesce((SELECT alerts_all FROM users WHERE id = nt.user_id), false),
+		  (SELECT string_agg(DISTINCT g.name, ', ') FROM group_alert_members gm
+		     JOIN server_group_members sm ON sm.group_id = gm.group_id JOIN server_groups g ON g.id = gm.group_id
+		     WHERE gm.user_id = nt.user_id AND sm.server_id = a.server_id AND NOT gm.muted),
+		  r.name, a.severity, a.message, a.state,
 		  (SELECT name FROM servers WHERE id = a.server_id), a.server_id::text, a.started_at, a.resolved_at, a.acknowledged_at`)
 	if err != nil {
 		return err
@@ -257,7 +275,8 @@ func (n *Notifier) flush(ctx context.Context) error {
 	var batch []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.id, &p.event, &p.attempts, &p.kind, &p.cfg, &p.ruleName, &p.severity, &p.msg, &p.state,
+		if err := rows.Scan(&p.id, &p.event, &p.attempts, &p.kind, &p.cfg, &p.userID, &p.userDisabled, &p.alertsAll, &p.reason,
+			&p.ruleName, &p.severity, &p.msg, &p.state,
 			&p.serverName, &p.serverID, &p.startedAt, &p.resolvedAt, &p.acknowledgedAt); err != nil {
 			rows.Close()
 			return err
@@ -266,6 +285,12 @@ func (n *Notifier) flush(ctx context.Context) error {
 	}
 	rows.Close()
 	for _, p := range batch {
+		if p.userDisabled { // disabled after the alert was queued
+			if _, err := n.pool.Exec(ctx, `UPDATE notifications SET status = 'failed', last_error = 'person disabled' WHERE id = $1`, p.id); err != nil {
+				return err
+			}
+			continue
+		}
 		sctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		err := n.senders.Send(sctx, p.kind, p.cfg, n.render(p))
 		cancel()
@@ -312,6 +337,28 @@ func (n *Notifier) render(p pending) Message {
 		}
 		fmt.Fprintf(&b, "Alerts: %s/alerts\n", n.publicURL)
 	}
+	if p.userID != nil {
+		n.personFooter(&b, p)
+	}
 	b.WriteString("\n-- BM Monitor")
 	return Message{Subject: subject, Body: b.String()}
+}
+
+// personFooter says why a person got the alert and how to pause.
+func (n *Notifier) personFooter(b *strings.Builder, p pending) {
+	switch {
+	case p.reason != nil && *p.reason != "":
+		fmt.Fprintf(b, "\nYou get this because you are in: %s\n", *p.reason)
+	case p.alertsAll:
+		b.WriteString("\nYou get this because you receive all alerts.\n")
+	}
+	if n.publicURL == "" || n.links == nil {
+		return
+	}
+	exp := n.now().Add(LinkTTL)
+	link := func(action string) string {
+		return n.publicURL + "/alert-link?t=" + n.links.Sign(*p.userID, action, exp)
+	}
+	fmt.Fprintf(b, "\nToo many emails? Pause your alerts:\n  for 1 day:  %s\n  for 7 days: %s\n  resume:     %s\n",
+		link(LinkPause1d), link(LinkPause7d), link(LinkResume))
 }

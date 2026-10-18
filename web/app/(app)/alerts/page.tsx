@@ -54,6 +54,7 @@ function AlertList({ state }: { state: Exclude<Tab, "rules"> }) {
   const [severity, setSeverity] = useState("");
   const q = useAlerts(`state=${state}&page=${page}&page_size=25${severity ? `&severity=${severity}` : ""}`, state !== "resolved");
   const { isOperator } = useRole();
+  const [shown, setShown] = useState<string | null>(null);
   const ack = useWrite((id: string) => api(`/alerts/${id}/ack`, { method: "POST" }), [["alerts"], ["fleet"]]);
   return (
     <>
@@ -105,11 +106,17 @@ function AlertList({ state }: { state: Exclude<Tab, "rules"> }) {
                   </p>
                 </div>
                 <AlertStateBadge state={a.state} />
+                {isOperator && (
+                  <Button size="sm" variant="ghost" aria-expanded={shown === a.id} onClick={() => setShown(shown === a.id ? null : a.id)}>
+                    {shown === a.id ? "Hide recipients" : "Who was notified"}
+                  </Button>
+                )}
                 {a.state === "firing" && isOperator && (
                   <Button size="sm" onClick={() => ack.mutate(a.id)} disabled={ack.isPending}>
                     Acknowledge
                   </Button>
                 )}
+                {shown === a.id && <Deliveries alertId={a.id} />}
               </li>
             ))}
           </ul>
@@ -121,6 +128,48 @@ function AlertList({ state }: { state: Exclude<Tab, "rules"> }) {
         </div>
       )}
     </>
+  );
+}
+
+type Delivery = { event: string; target: string; kind: string; status: string; attempts: number; sent_at: string | null; last_error: string | null; created_at: string };
+
+/** Who an alert was sent to, and whether it arrived. */
+function Deliveries({ alertId }: { alertId: string }) {
+  const q = useQuery({ queryKey: ["deliveries", alertId], queryFn: () => api<{ items: Delivery[] }>(`/alerts/${alertId}/deliveries`) });
+  return (
+    <div className="basis-full rounded-card border border-border bg-background px-3 py-2 text-xs">
+      {!q.data ? (
+        <p className="text-foreground-muted">Loading…</p>
+      ) : q.data.items.length === 0 ? (
+        <p className="text-foreground-muted">Nobody was notified: no person or channel matched this alert.</p>
+      ) : (
+        <table className="w-full">
+          <thead className="text-left text-foreground-muted">
+            <tr>
+              <th scope="col" className="py-1 pr-3 font-medium">Event</th>
+              <th scope="col" className="py-1 pr-3 font-medium">Sent to</th>
+              <th scope="col" className="py-1 pr-3 font-medium">Status</th>
+              <th scope="col" className="hidden py-1 font-medium sm:table-cell">When</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {q.data.items.map((d, i) => (
+              <tr key={i}>
+                <td className="py-1 pr-3">{d.event}</td>
+                <td className="py-1 pr-3">
+                  {d.target} <span className="text-foreground-muted">({d.kind})</span>
+                </td>
+                <td className="py-1 pr-3">
+                  <Badge tone={d.status === "sent" ? "ok" : d.status === "failed" ? "crit" : "warn"}>{d.status}</Badge>
+                  {d.last_error && <span className="ml-1 text-crit">{d.last_error}</span>}
+                </td>
+                <td className="hidden py-1 sm:table-cell">{d.sent_at ? dateTime(d.sent_at) : `queued ${ago(d.created_at)}`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 

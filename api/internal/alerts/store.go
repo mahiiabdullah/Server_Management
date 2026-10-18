@@ -278,14 +278,19 @@ type Channel struct {
 	Config      ChannelConfig `json:"config"`
 	MinSeverity string        `json:"min_severity"`
 	Enabled     bool          `json:"enabled"`
+	Groups      []PersonGroup `json:"groups"`     // empty = every alert; else only alerts on servers in these groups
+	GroupIDs    []string      `json:"-"`          // on save
 	Configured  bool          `json:"configured"` // env provides the secrets this kind needs
 	LastSent    *time.Time    `json:"last_sent_at"`
 	LastError   *string       `json:"last_error"`
 }
 
+const channelGroupsSQL = `coalesce((SELECT jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name) ORDER BY lower(g.name))
+	FROM notification_channel_groups cg JOIN server_groups g ON g.id = cg.group_id WHERE cg.channel_id = c.id), '[]')`
+
 func (s *Store) ListChannels(ctx context.Context, senders *Senders) ([]Channel, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT c.id, c.kind, c.name, c.config, c.min_severity, c.enabled,
+		SELECT c.id, c.kind, c.name, c.config, c.min_severity, c.enabled, `+channelGroupsSQL+`,
 		  (SELECT max(sent_at) FROM notifications n WHERE n.channel_id = c.id),
 		  (SELECT last_error FROM notifications n WHERE n.channel_id = c.id AND n.last_error IS NOT NULL ORDER BY id DESC LIMIT 1)
 		FROM notification_channels c ORDER BY c.kind, c.name`)
@@ -296,7 +301,7 @@ func (s *Store) ListChannels(ctx context.Context, senders *Senders) ([]Channel, 
 	out := []Channel{}
 	for rows.Next() {
 		var c Channel
-		if err := rows.Scan(&c.ID, &c.Kind, &c.Name, &c.Config, &c.MinSeverity, &c.Enabled, &c.LastSent, &c.LastError); err != nil {
+		if err := rows.Scan(&c.ID, &c.Kind, &c.Name, &c.Config, &c.MinSeverity, &c.Enabled, &c.Groups, &c.LastSent, &c.LastError); err != nil {
 			return nil, err
 		}
 		c.Configured = senders.Available(c.Kind)
@@ -307,8 +312,9 @@ func (s *Store) ListChannels(ctx context.Context, senders *Senders) ([]Channel, 
 
 func (s *Store) GetChannel(ctx context.Context, id string) (*Channel, error) {
 	var c Channel
-	err := s.pool.QueryRow(ctx, `SELECT id, kind, name, config, min_severity, enabled FROM notification_channels WHERE id = $1`, id).
-		Scan(&c.ID, &c.Kind, &c.Name, &c.Config, &c.MinSeverity, &c.Enabled)
+	err := s.pool.QueryRow(ctx, `SELECT c.id, c.kind, c.name, c.config, c.min_severity, c.enabled, `+channelGroupsSQL+`
+		FROM notification_channels c WHERE c.id = $1`, id).
+		Scan(&c.ID, &c.Kind, &c.Name, &c.Config, &c.MinSeverity, &c.Enabled, &c.Groups)
 	if db.IsNoRows(err) {
 		return nil, ErrNotFound
 	}
@@ -341,7 +347,22 @@ func (s *Store) SaveChannel(ctx context.Context, id string, c Channel, ev audit.
 	if err != nil {
 		return nil, err
 	}
-	ev.TargetType, ev.TargetID, ev.After = "notification_channel", id, c
+	groupIDs := append([]string{}, c.GroupIDs...)
+	var known int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM server_groups WHERE id = ANY($1::uuid[])`, groupIDs).Scan(&known); err != nil {
+		return nil, err
+	}
+	if known != len(groupIDs) {
+		return nil, ErrUnknownGroup
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM notification_channel_groups WHERE channel_id = $1`, id); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO notification_channel_groups (channel_id, group_id) SELECT $1::uuid, unnest($2::uuid[])`, id, groupIDs); err != nil {
+		return nil, err
+	}
+	ev.TargetType, ev.TargetID = "notification_channel", id
+	ev.After = map[string]any{"kind": c.Kind, "name": c.Name, "config": c.Config, "min_severity": c.MinSeverity, "enabled": c.Enabled, "group_ids": groupIDs}
 	if err := audit.Record(ctx, tx, ev); err != nil {
 		return nil, err
 	}

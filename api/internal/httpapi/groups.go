@@ -9,6 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"bm-monitor/api/internal/alerts"
+	"bm-monitor/api/internal/auth"
 	"bm-monitor/api/internal/cost"
 	"bm-monitor/api/internal/inventory"
 )
@@ -171,6 +172,12 @@ func (a *API) getGroup(w http.ResponseWriter, r *http.Request) {
 	if c, ok := costs[id]; ok {
 		gc = &c
 	}
+	// Everyone sees who gets the group's alerts; only admins see their addresses.
+	people, err := a.groupPeople(ctx, id, auth.UserFrom(ctx).Role.AtLeast(auth.RoleAdmin))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
 	var asOf *time.Time
 	if snap != nil {
 		asOf = &snap.AsOf
@@ -178,6 +185,7 @@ func (a *API) getGroup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"group": g, "servers": views, "as_of": asOf, "metrics_available": snap != nil,
 		"open_alerts": open, "cost": gc, "currency": a.costs.Currency(), "costs_configured": costs != nil,
+		"people": people,
 	})
 }
 

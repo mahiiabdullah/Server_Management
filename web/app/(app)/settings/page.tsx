@@ -3,6 +3,8 @@
 import { Suspense, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
+import { GroupChips, GroupPicker } from "@/components/groups";
+import { MyAlerts, People } from "@/components/people";
 import { EmptyState, ErrorState, LoadingBlock, NoPermission, PageHeader } from "@/components/states";
 import { Badge, Button, Card, Dialog, Field, Input, Pagination, Select, Tabs } from "@/components/ui";
 import { api, isApiError } from "@/lib/api";
@@ -28,7 +30,7 @@ function Settings() {
   const tabs: { id: Tab; label: string }[] = [
     { id: "pricing", label: "Pricing" },
     { id: "notifications", label: "Notifications" },
-    { id: "users", label: "Users" },
+    { id: "users", label: "People" },
     { id: "general", label: "General" },
     { id: "audit", label: "Audit log" },
     { id: "account", label: "My account" },
@@ -46,7 +48,7 @@ function Settings() {
         ) : tab === "notifications" ? (
           <Notifications />
         ) : tab === "users" ? (
-          <Users />
+          <People />
         ) : tab === "general" ? (
           <General />
         ) : tab === "audit" ? (
@@ -454,7 +456,18 @@ function InvoiceImport() {
 
 // ---------------- notifications ----------------
 
-type Channel = { id: string; kind: string; name: string; config: { to?: string[]; chat_id?: string }; min_severity: string; enabled: boolean; configured: boolean; last_sent_at: string | null; last_error: string | null };
+type Channel = {
+  id: string;
+  kind: string;
+  name: string;
+  config: { to?: string[]; chat_id?: string };
+  min_severity: string;
+  enabled: boolean;
+  groups: { id: string; name: string }[];
+  configured: boolean;
+  last_sent_at: string | null;
+  last_error: string | null;
+};
 
 function Notifications() {
   const q = useQuery({ queryKey: ["channels"], queryFn: () => api<{ items: Channel[]; available: Record<string, boolean> }>("/notification-channels") });
@@ -472,7 +485,8 @@ function Notifications() {
   return (
     <Card title="Where alerts are sent" actions={<Button size="sm" variant="primary" onClick={() => setEdit("new")}>+ New channel</Button>}>
       <p className="mb-3 text-sm text-foreground-muted">
-        Secrets (SMTP password, webhook URLs, bot tokens) live only in the server&apos;s environment. A channel here holds the addresses and the minimum severity.
+        Team mailboxes and chat channels. Secrets (SMTP password, webhook URLs, bot tokens) live only in the server&apos;s environment. To send alerts to
+        individual people by group, use Settings → People instead.
       </p>
       {q.error ? (
         <ErrorState error={q.error} onRetry={() => q.refetch()} />
@@ -496,6 +510,15 @@ function Notifications() {
                   <div className="min-w-0 flex-1">
                     <p className="font-medium">
                       {c.name} <Badge>{c.kind}</Badge> {!c.enabled && <Badge>disabled</Badge>} {!c.configured && <Badge tone="warn">⚠ env not set</Badge>}
+                    </p>
+                    <p className="mt-1 flex flex-wrap items-center gap-1 text-xs text-foreground-muted">
+                      {c.groups.length ? (
+                        <>
+                          only <GroupChips groups={c.groups} />
+                        </>
+                      ) : (
+                        "every alert"
+                      )}
                     </p>
                     <p className="mt-0.5 text-xs text-foreground-muted">
                       {c.config.to?.join(", ")} · {c.min_severity} and above · last sent {c.last_sent_at ? ago(c.last_sent_at) : "never"}
@@ -527,6 +550,7 @@ function ChannelForm({ channel, onClose }: { channel: Channel | "new" | null; on
       ? { kind: channel.kind, name: channel.name, to: channel.config.to?.join(", ") ?? "", chat_id: channel.config.chat_id ?? "", min_severity: channel.min_severity, enabled: channel.enabled }
       : { kind: "email", name: "", to: "", chat_id: "", min_severity: "warning", enabled: true },
   );
+  const [groupIds, setGroupIds] = useState<string[]>(() => (channel && channel !== "new" ? channel.groups.map((g) => g.id) : []));
   const [e, setE] = useState<Record<string, string>>({});
   const save = useWrite(
     () => {
@@ -535,6 +559,7 @@ function ChannelForm({ channel, onClose }: { channel: Channel | "new" | null; on
         name: v.name,
         min_severity: v.min_severity,
         enabled: v.enabled,
+        group_ids: groupIds,
         config: { to: v.kind === "email" ? v.to.split(",").map((s) => s.trim()).filter(Boolean) : undefined, chat_id: v.kind === "telegram" ? v.chat_id : undefined },
       };
       return isNew ? api("/notification-channels", { method: "POST", body }) : api(`/notification-channels/${(channel as Channel).id}`, { method: "PATCH", body });
@@ -589,142 +614,14 @@ function ChannelForm({ channel, onClose }: { channel: Channel | "new" | null; on
             </Select>
           )}
         </Field>
+        <Field label="Only alerts for these groups" error={e.group_ids} hint="Leave empty to send every alert, including fleet-wide ones.">
+          {(id, d) => <GroupPicker id={id} describedBy={d} value={groupIds} onChange={setGroupIds} allowCreate={false} note="empty = every alert" />}
+        </Field>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={v.enabled} onChange={(x) => setV({ ...v, enabled: x.target.checked })} /> Enabled
         </label>
       </form>
     </Dialog>
-  );
-}
-
-// ---------------- users ----------------
-
-type Account = { id: string; email: string; name: string; role: string; disabled: boolean; has_password: boolean; locked_until: string | null; last_login_at: string | null; created_at: string };
-
-function Users() {
-  const q = useQuery({ queryKey: ["users"], queryFn: () => api<{ items: Account[]; sso_enabled: boolean }>("/users") });
-  const [adding, setAdding] = useState(false);
-  const [v, setV] = useState({ email: "", name: "", role: "viewer", password: "" });
-  const [e, setE] = useState<Record<string, string>>({});
-  const create = useWrite(() => api("/users", { method: "POST", body: v }), [["users"]]);
-  const patch = useWrite(({ id, body }: { id: string; body: Record<string, unknown> }) => api(`/users/${id}`, { method: "PATCH", body }), [["users"]]);
-  const onErr = (x: unknown) => alert(isApiError(x) ? Object.values(x.fields)[0] ?? x.message : "Failed.");
-  return (
-    <Card title="Users and roles" actions={<Button size="sm" variant="primary" onClick={() => setAdding(true)}>+ Add user</Button>}>
-      <p className="mb-3 text-sm text-foreground-muted">
-        <strong>Viewer</strong> sees everything. <strong>Operator</strong> also adds, edits, enables and disables servers and acknowledges alerts. <strong>Admin</strong> also deletes servers,
-        manages pricing, rules, channels, users and settings.
-        {q.data?.sso_enabled ? " Google sign-in is on: a user without a password signs in with Google only." : ""}
-      </p>
-      {q.error ? (
-        <ErrorState error={q.error} onRetry={() => q.refetch()} />
-      ) : !q.data ? (
-        <LoadingBlock rows={3} />
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-xs text-foreground-muted">
-              <tr>
-                <th scope="col" className="py-1.5 pr-3 font-medium">User</th>
-                <th scope="col" className="py-1.5 pr-3 font-medium">Role</th>
-                <th scope="col" className="hidden py-1.5 pr-3 font-medium md:table-cell">Last sign-in</th>
-                <th scope="col" className="py-1.5 pr-3 font-medium">State</th>
-                <th scope="col" className="py-1.5"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {q.data.items.map((u) => (
-                <tr key={u.id}>
-                  <td className="py-2 pr-3">
-                    {u.name}
-                    <div className="text-xs text-foreground-muted">
-                      {u.email}
-                      {!u.has_password && " · Google only"}
-                    </div>
-                  </td>
-                  <td className="py-2 pr-3">
-                    <Select aria-label={`Role of ${u.email}`} value={u.role} onChange={(x) => patch.mutate({ id: u.id, body: { role: x.target.value } }, { onError: onErr })} className="h-8 w-auto">
-                      <option value="viewer">viewer</option>
-                      <option value="operator">operator</option>
-                      <option value="admin">admin</option>
-                    </Select>
-                  </td>
-                  <td className="hidden py-2 pr-3 text-xs md:table-cell">{u.last_login_at ? dateTime(u.last_login_at) : "never"}</td>
-                  <td className="py-2 pr-3">
-                    {u.disabled ? <Badge>disabled</Badge> : u.locked_until && new Date(u.locked_until) > new Date() ? <Badge tone="warn">locked</Badge> : <Badge tone="ok">active</Badge>}
-                  </td>
-                  <td className="py-2 text-right">
-                    <div className="flex justify-end gap-1">
-                      {u.locked_until && new Date(u.locked_until) > new Date() && (
-                        <Button size="sm" variant="ghost" onClick={() => patch.mutate({ id: u.id, body: { unlock: true } }, { onError: onErr })}>
-                          Unlock
-                        </Button>
-                      )}
-                      <Button size="sm" variant="ghost" onClick={() => patch.mutate({ id: u.id, body: { disabled: !u.disabled } }, { onError: onErr })}>
-                        {u.disabled ? "Enable" : "Disable"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => {
-                          const p = prompt(`New password for ${u.email} (at least 12 characters). Their sessions will end.`);
-                          if (p) patch.mutate({ id: u.id, body: { password: p } }, { onError: onErr });
-                        }}
-                      >
-                        Reset password
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <Dialog
-        open={adding}
-        onClose={() => setAdding(false)}
-        title="Add user"
-        footer={
-          <>
-            <Button onClick={() => setAdding(false)}>Cancel</Button>
-            <Button variant="primary" type="submit" form="user-form" disabled={create.isPending}>
-              Add user
-            </Button>
-          </>
-        }
-      >
-        <form
-          id="user-form"
-          className="flex flex-col gap-4"
-          onSubmit={(ev) => {
-            ev.preventDefault();
-            setE({});
-            create.mutate(undefined, { onSuccess: () => (setAdding(false), setV({ email: "", name: "", role: "viewer", password: "" })), onError: (x) => setE(errs(x)) });
-          }}
-        >
-          <FormError msg={e._} />
-          <Field label="Email" error={e.email}>
-            {(id) => <Input id={id} type="email" value={v.email} onChange={(x) => setV({ ...v, email: x.target.value })} />}
-          </Field>
-          <Field label="Name" error={e.name}>
-            {(id) => <Input id={id} value={v.name} onChange={(x) => setV({ ...v, name: x.target.value })} />}
-          </Field>
-          <Field label="Role" error={e.role}>
-            {(id) => (
-              <Select id={id} value={v.role} onChange={(x) => setV({ ...v, role: x.target.value })}>
-                <option value="viewer">Viewer</option>
-                <option value="operator">Operator</option>
-                <option value="admin">Admin</option>
-              </Select>
-            )}
-          </Field>
-          <Field label="Initial password" error={e.password} hint={q.data?.sso_enabled ? "Leave empty for a Google-only account" : "At least 12 characters"}>
-            {(id) => <Input id={id} type="password" autoComplete="new-password" value={v.password} onChange={(x) => setV({ ...v, password: x.target.value })} />}
-          </Field>
-        </form>
-      </Dialog>
-    </Card>
   );
 }
 
@@ -910,6 +807,15 @@ function Audit() {
 // ---------------- account ----------------
 
 function Account() {
+  return (
+    <div className="flex flex-col gap-5">
+      <MyAlerts />
+      <PasswordCard />
+    </div>
+  );
+}
+
+function PasswordCard() {
   const [v, setV] = useState({ current: "", next: "", confirm: "" });
   const [e, setE] = useState<Record<string, string>>({});
   const [done, setDone] = useState(false);

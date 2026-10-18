@@ -30,9 +30,24 @@ export function GroupChips({ groups, empty = "—", className }: { groups: Group
  * Pick any number of groups, with a quick "new group" box. Selection is a list
  * of group ids, kept by the parent.
  */
-export function GroupPicker({ id, value, onChange, describedBy }: { id: string; value: string[]; onChange: (ids: string[]) => void; describedBy?: string }) {
+export function GroupPicker({
+  id,
+  value,
+  onChange,
+  describedBy,
+  allowCreate = true,
+  note = "a server can be in several groups",
+}: {
+  id: string;
+  value: string[];
+  onChange: (ids: string[]) => void;
+  describedBy?: string;
+  allowCreate?: boolean;
+  note?: string;
+}) {
   const groups = useGroups();
-  const { isOperator } = useRole();
+  const { isOperator: canCreate } = useRole();
+  const isOperator = canCreate && allowCreate;
   const [filter, setFilter] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
@@ -71,7 +86,9 @@ export function GroupPicker({ id, value, onChange, describedBy }: { id: string; 
               <label className="flex cursor-pointer items-center gap-2 rounded py-1 text-sm">
                 <input type="checkbox" checked={value.includes(g.id)} onChange={() => toggle(g.id)} className="accent-accent" />
                 <span className="truncate">{g.name}</span>
-                <span className="ml-auto text-xs text-foreground-muted">{g.server_count}</span>
+                <span className="ml-auto text-xs whitespace-nowrap text-foreground-muted">
+                  {g.server_count} server{g.server_count === 1 ? "" : "s"}
+                </span>
               </label>
             </li>
           ))}
@@ -104,7 +121,7 @@ export function GroupPicker({ id, value, onChange, describedBy }: { id: string; 
         </p>
       )}
       <p className="border-t border-border px-3 py-1.5 text-xs text-foreground-muted">
-        {value.length === 0 ? "No group selected" : `${value.length} selected`} · a server can be in several groups
+        {value.length === 0 ? "No group selected" : `${value.length} selected`} · {note}
       </p>
     </div>
   );

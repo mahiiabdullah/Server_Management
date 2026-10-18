@@ -81,7 +81,7 @@ func (s *Service) Login(ctx context.Context, email, password string, ip netip.Ad
 		lockedUntil *time.Time
 	)
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, email, name, role, password_hash, disabled, locked_until FROM users WHERE lower(email) = $1`, email).
+		`SELECT id, email, name, role, password_hash, disabled, locked_until FROM users WHERE lower(email) = $1 AND kind = 'user'`, email).
 		Scan(&u.ID, &u.Email, &u.Name, &u.Role, &hash, &disabled, &lockedUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, _ = VerifyPassword(password, dummyHash) // equalise timing
@@ -164,7 +164,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*User, error)
 	err := s.pool.QueryRow(ctx, `
 		SELECT u.id, u.email, u.name, u.role, s.last_seen_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = $1 AND s.expires_at > $2 AND s.last_seen_at > $3 AND NOT u.disabled`,
+		WHERE s.token_hash = $1 AND s.expires_at > $2 AND s.last_seen_at > $3 AND NOT u.disabled AND u.kind = 'user'`,
 		th, now, now.Add(-s.idle)).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &lastSeen)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoSession
