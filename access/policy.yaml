@@ -5,11 +5,16 @@
 #           runner logs in as (forced to run bm-access-apply only), and whether
 #           it is production (production requests need production_approvals).
 #
-# Pilot scope: only bm3 (the testing box). bm1 and bm2 are deliberately not
-# listed: nothing may be requested for them, and the runner never connects to
-# them. Add them only after the pilot, by a reviewed policy change.
+# ready: false lists a server whose setup-server.sh has not been run: the runner
+# never connects to it and it cannot be requested. login_host/login_port are where
+# people connect, when that differs from host.
+#
+# Pilot scope: bm3 (the testing box), not set up yet. bm1 and bm2 are deliberately
+# not listed. "demo" is the local demo server (docker-compose.access-demo.yml,
+# docs/ACCESS-DEMO.md); remove it when the demo is over.
 servers:
-  bm3: {host: 10.0.0.13, ssh_user: bm-access-deploy, production: false}
+  bm3: {host: 10.0.0.13, ssh_user: bm-access-deploy, production: false, ready: false}
+  demo: {host: 172.31.50.10, ssh_user: bm-access-deploy, production: false, login_host: localhost, login_port: 2222}
   # bm1: {host: 10.0.0.11, ssh_user: bm-access-deploy, production: true}
   # bm2: {host: 10.0.0.12, ssh_user: bm-access-deploy, production: true}
 

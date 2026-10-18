@@ -51,7 +51,16 @@ type Server struct {
 	Host       string `yaml:"host" json:"host"`             // address reachable from the runner (WireGuard)
 	SSHUser    string `yaml:"ssh_user" json:"-"`            // account the runner uses to apply changes
 	Production bool   `yaml:"production" json:"production"` // production needs production_approvals
+	// Ready: false lists a server whose SSH setup (setup-server.sh) is not done
+	// yet. The runner never connects to it and new requests for it are refused.
+	Ready *bool `yaml:"ready,omitempty" json:"-"`
+	// Where people connect, when that differs from Host (default Host, port 22).
+	LoginHost string `yaml:"login_host,omitempty" json:"login_host,omitempty"`
+	LoginPort int    `yaml:"login_port,omitempty" json:"login_port,omitempty"`
 }
+
+// IsReady reports whether the server's SSH setup is done (the default).
+func (s Server) IsReady() bool { return s.Ready == nil || *s.Ready }
 
 // Admin can approve pull requests. Email links the GitHub account to the
 // dashboard account, so an admin can never approve their own request.

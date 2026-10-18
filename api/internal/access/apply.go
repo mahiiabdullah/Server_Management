@@ -241,7 +241,9 @@ func Apply(ctx context.Context, in ApplyInput) (*ApplyResult, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		ss := ServerStatus{Accounts: len(desired[name]), AppliedAt: in.Now.UTC()}
-		if in.DryRun {
+		if !in.Policy.Servers[name].IsReady() {
+			ss.Accounts, ss.Error = 0, "not ready: server setup not done (not contacted)"
+		} else if in.DryRun {
 			ss.Error = "dry run: not applied"
 		} else if err := in.Remote.Apply(ctx, name, in.Policy.Servers[name], desired[name], krl); err != nil {
 			ss.Error = err.Error()

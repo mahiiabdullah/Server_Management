@@ -164,6 +164,8 @@ func (p *Policy) ValidateGrant(g Grant, now time.Time, isNew bool) Problems {
 	for _, s := range g.Servers {
 		if _, ok := p.Servers[s]; !ok {
 			bad("servers", fmt.Sprintf("unknown server %q", s))
+		} else if isNew && !p.Servers[s].IsReady() {
+			bad("servers", fmt.Sprintf("%q is not ready for SSH access yet (server setup not done)", s))
 		}
 		if seen[s] {
 			bad("servers", fmt.Sprintf("%q listed twice", s))

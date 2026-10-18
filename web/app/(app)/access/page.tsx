@@ -14,7 +14,7 @@ type Config =
   | {
       enabled: true;
       repo: string;
-      servers: { name: string; host: string; production: boolean }[];
+      servers: { name: string; host: string; port?: number; production: boolean; ready: boolean }[];
       groups: { name: string; servers: string[]; production: boolean }[];
       max_days: number;
       max_sudo_days: number;
@@ -250,11 +250,20 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
             <fieldset className="flex flex-col gap-1.5">
               <legend className="mb-1 text-xs font-medium text-foreground-muted">Servers</legend>
               {cfg.servers.map((s) => (
-                <label key={s.name} className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={servers.includes(s.name)} onChange={(e) => setServers(e.target.checked ? [...servers, s.name] : servers.filter((x) => x !== s.name))} />
+                <label key={s.name} className={`flex items-center gap-2 text-sm ${s.ready ? "" : "opacity-60"}`}>
+                  <input
+                    type="checkbox"
+                    disabled={!s.ready}
+                    checked={servers.includes(s.name)}
+                    onChange={(e) => setServers(e.target.checked ? [...servers, s.name] : servers.filter((x) => x !== s.name))}
+                  />
                   <span className="font-medium">{s.name}</span>
-                  <span className="font-mono text-xs text-foreground-muted">{s.host}</span>
+                  <span className="font-mono text-xs text-foreground-muted">
+                    {s.host}
+                    {s.port ? `:${s.port}` : ""}
+                  </span>
                   {s.production ? <Badge tone="warn">production</Badge> : <Badge>testing</Badge>}
+                  {!s.ready && <Badge>setup not done</Badge>}
                 </label>
               ))}
               {errors.servers && <p className="text-xs text-crit">{errors.servers}</p>}
@@ -352,7 +361,10 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
 function RequestCard({ r, cfg }: { r: AccessRequest; cfg: Extract<Config, { enabled: true }> }) {
   const s = STATUS[r.status];
   const covered = [...new Set([...r.servers, ...r.groups.flatMap((g) => cfg.groups.find((x) => x.name === g)?.servers ?? [])])];
-  const hosts = covered.map((n) => cfg.servers.find((x) => x.name === n)?.host ?? n);
+  const logins = covered.map((n) => {
+    const s = cfg.servers.find((x) => x.name === n);
+    return { key: n, cmd: `ssh ${s?.port ? `-p ${s.port} ` : ""}${r.unix_user}@${s?.host ?? n}` };
+  });
   return (
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -380,8 +392,8 @@ function RequestCard({ r, cfg }: { r: AccessRequest; cfg: Extract<Config, { enab
       {r.kind === "request" && r.status === "active" && r.certificate && (
         <div className="mt-4 flex flex-col gap-3 border-t border-border pt-4">
           <CopyBlock label="1. Save this certificate next to your key, as ~/.ssh/id_ed25519-cert.pub" text={r.certificate} />
-          {hosts.map((h, i) => (
-            <CopyBlock key={h} label={i === 0 ? "2. Connect (WireGuard must be on)" : " "} text={`ssh ${r.unix_user}@${h}`} />
+          {logins.map((l, i) => (
+            <CopyBlock key={l.key} label={i === 0 ? "2. Connect" : " "} text={l.cmd} />
           ))}
           <p className="text-xs text-foreground-muted">The certificate stops working on {r.expires_at ? dateTime(r.expires_at) : "its expiry date"}. Request again if you need more time.</p>
         </div>

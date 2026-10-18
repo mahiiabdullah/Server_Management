@@ -6,3 +6,4 @@ Dockerfile text eol=lf
 deploy/ssh-access/* text eol=lf
 *.yaml text eol=lf
 *.py text eol=lf
+deploy/access-demo/* text eol=lf

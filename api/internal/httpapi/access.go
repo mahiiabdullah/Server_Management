@@ -48,12 +48,18 @@ func (a *API) accessConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	type srv struct {
 		Name       string `json:"name"`
-		Host       string `json:"host"`
+		Host       string `json:"host"` // where people connect
+		Port       int    `json:"port,omitempty"`
 		Production bool   `json:"production"`
+		Ready      bool   `json:"ready"`
 	}
 	servers := []srv{}
 	for name, s := range p.Servers {
-		servers = append(servers, srv{name, s.Host, s.Production})
+		host := s.Host
+		if s.LoginHost != "" {
+			host = s.LoginHost
+		}
+		servers = append(servers, srv{name, host, s.LoginPort, s.Production, s.IsReady()})
 	}
 	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 	u := auth.UserFrom(r.Context())

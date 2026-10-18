@@ -14,6 +14,7 @@ hardcoded, and costs are never guessed.
 | [docs/API.md](docs/API.md) | REST API contract |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Production deployment, adding servers, backups and restore, troubleshooting |
 | [docs/ACCESS.md](docs/ACCESS.md) | SSH access requests: pull-request approval, certificates, setup and security model |
+| [docs/ACCESS-DEMO.md](docs/ACCESS-DEMO.md) | Demo of the whole SSH access flow on one machine (no real server) |
 
 ## Run it locally (Windows/macOS/Linux with Docker Desktop)
 

@@ -1,0 +1,56 @@
+# SSH access workflow demo on one machine, without touching any real server.
+#   demo-server  real sshd, prepared by deploy/ssh-access/setup-server.sh
+#   runner       GitHub self-hosted runner (label bm-access) holding the demo CA
+# Start:  docker compose -f docker-compose.access-demo.yml up -d --build
+# Guide:  docs/ACCESS-DEMO.md
+name: bm-access-demo
+
+services:
+  keys:
+    image: alpine:3.20
+    command: ["sh", "/keys.sh"]
+    volumes:
+      - ./deploy/access-demo/keys.sh:/keys.sh:ro
+      - ca-keys:/ca
+      - public-keys:/pub
+      - runner-state:/runner-state
+
+  demo-server:
+    build: {context: ., dockerfile: deploy/access-demo/server.Dockerfile}
+    depends_on:
+      keys: {condition: service_completed_successfully}
+    environment:
+      RUNNER_IP: 172.31.50.20
+    volumes:
+      - public-keys:/pub
+    ports:
+      - "127.0.0.1:2222:22"   # you log in with: ssh -p 2222 <user>@localhost
+    networks:
+      demo: {ipv4_address: 172.31.50.10}
+    restart: unless-stopped
+
+  runner:
+    build: {context: ., dockerfile: deploy/access-demo/runner.Dockerfile}
+    depends_on:
+      keys: {condition: service_completed_successfully}
+      demo-server: {condition: service_started}
+    environment:
+      REPO_URL: https://github.com/${GITHUB_REPO:?set GITHUB_REPO in .env}
+      RUNNER_TOKEN: ${ACCESS_DEMO_RUNNER_TOKEN:-}
+      SERVER_IP: 172.31.50.10
+    volumes:
+      - ca-keys:/etc/bm-access
+      - public-keys:/pub:ro
+      - runner-state:/runner-state
+    networks:
+      demo: {ipv4_address: 172.31.50.20}
+    restart: unless-stopped
+
+networks:
+  demo:
+    ipam: {config: [{subnet: 172.31.50.0/24}]}
+
+volumes:
+  ca-keys: {}
+  public-keys: {}
+  runner-state: {}
