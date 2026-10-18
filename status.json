@@ -1,0 +1,18 @@
+{
+  "generated_at": "2026-10-18T13:34:39.618320177Z",
+  "commit": "b6cadbb6d7e060ca84e87f929341f6f48c93fbdf",
+  "grants": {},
+  "servers": {
+    "bm3": {
+      "ok": false,
+      "error": "not ready: server setup not done (not contacted)",
+      "accounts": 0,
+      "applied_at": "2026-10-18T13:34:39.618320177Z"
+    },
+    "demo": {
+      "ok": true,
+      "accounts": 0,
+      "applied_at": "2026-10-18T13:34:39.618320177Z"
+    }
+  }
+}
