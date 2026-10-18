@@ -156,8 +156,10 @@ func (a *API) Handler() http.Handler {
 			r.With(admin).Put("/servers/{id}/pricing", a.assignPricing)
 
 			r.Get("/groups", a.listGroups)
+			r.Get("/groups/{id}", a.getGroup)
 			r.With(operator).Post("/groups", a.createGroup)
 			r.With(operator).Patch("/groups/{id}", a.updateGroup)
+			r.With(operator).Put("/groups/{id}/servers", a.setGroupServers)
 			r.With(admin).Delete("/groups/{id}", a.deleteGroup)
 
 			r.Get("/pricing-plans", a.listPlans)

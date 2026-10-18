@@ -158,7 +158,7 @@ func inScope(r Rule, s *inventory.Server) bool {
 	if r.ScopeServerID != nil && *r.ScopeServerID != s.ID {
 		return false
 	}
-	if r.ScopeGroupID != nil && (s.GroupID == nil || *s.GroupID != *r.ScopeGroupID) {
+	if r.ScopeGroupID != nil && !s.InGroup(*r.ScopeGroupID) {
 		return false
 	}
 	return true

@@ -372,9 +372,8 @@ func (s *Store) Prorate(ctx context.Context) bool {
 // Load reads every input that can affect [from, to).
 func (s *Store) Load(ctx context.Context, from, to time.Time) ([]ServerInfo, []Assignment, []FixedCost, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT sv.id, sv.name, coalesce(sv.group_id::text, ''), coalesce(g.name, ''), coalesce(sv.cpu_cores, 0), sv.deleted_at IS NOT NULL,
-		       a.active_from, a.active_to
-		FROM server_activity a JOIN servers sv ON sv.id = a.server_id LEFT JOIN server_groups g ON g.id = sv.group_id
+		SELECT sv.id, sv.name, coalesce(sv.cpu_cores, 0), sv.deleted_at IS NOT NULL, a.active_from, a.active_to
+		FROM server_activity a JOIN servers sv ON sv.id = a.server_id
 		WHERE a.active_from < $2 AND (a.active_to IS NULL OR a.active_to > $1)
 		ORDER BY lower(sv.name), sv.id, a.active_from`, from, to)
 	if err != nil {
@@ -386,7 +385,7 @@ func (s *Store) Load(ctx context.Context, from, to time.Time) ([]ServerInfo, []A
 		var si ServerInfo
 		var iv Interval
 		var toPtr *time.Time
-		if err := rows.Scan(&si.ID, &si.Name, &si.GroupID, &si.GroupName, &si.Cores, &si.Deleted, &iv.From, &toPtr); err != nil {
+		if err := rows.Scan(&si.ID, &si.Name, &si.Cores, &si.Deleted, &iv.From, &toPtr); err != nil {
 			rows.Close()
 			return nil, nil, nil, err
 		}
@@ -400,6 +399,27 @@ func (s *Store) Load(ctx context.Context, from, to time.Time) ([]ServerInfo, []A
 		si.Activity = []Interval{iv}
 		idx[si.ID] = len(servers)
 		servers = append(servers, si)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+
+	rows, err = s.pool.Query(ctx, `SELECT m.server_id, g.id, g.name FROM server_group_members m
+		JOIN server_groups g ON g.id = m.group_id ORDER BY lower(g.name)`)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for rows.Next() {
+		var sid string
+		var g GroupRef
+		if err := rows.Scan(&sid, &g.ID, &g.Name); err != nil {
+			rows.Close()
+			return nil, nil, nil, err
+		}
+		if i, ok := idx[sid]; ok {
+			servers[i].Groups = append(servers[i].Groups, g)
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -430,9 +450,10 @@ func (s *Store) Load(ctx context.Context, from, to time.Time) ([]ServerInfo, []A
 
 	var fixed []FixedCost
 	rows, err = s.pool.Query(ctx, `
-		SELECT id, name, amount, unit, category, coalesce(server_id::text, ''), coalesce(group_id::text, ''), allocation,
-		       effective_from, effective_to
-		FROM fixed_costs WHERE effective_from < $2 AND (effective_to IS NULL OR effective_to > $1)`, from, to)
+		SELECT f.id, f.name, f.amount, f.unit, f.category, coalesce(f.server_id::text, ''), coalesce(f.group_id::text, ''),
+		       coalesce(g.name, ''), f.allocation, f.effective_from, f.effective_to
+		FROM fixed_costs f LEFT JOIN server_groups g ON g.id = f.group_id
+		WHERE f.effective_from < $2 AND (f.effective_to IS NULL OR f.effective_to > $1)`, from, to)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -440,7 +461,7 @@ func (s *Store) Load(ctx context.Context, from, to time.Time) ([]ServerInfo, []A
 	for rows.Next() {
 		var fc FixedCost
 		var toPtr *time.Time
-		if err := rows.Scan(&fc.ID, &fc.Name, &fc.Amount, &fc.Unit, &fc.Category, &fc.ServerID, &fc.GroupID, &fc.Allocation, &fc.From, &toPtr); err != nil {
+		if err := rows.Scan(&fc.ID, &fc.Name, &fc.Amount, &fc.Unit, &fc.Category, &fc.ServerID, &fc.GroupID, &fc.GroupName, &fc.Allocation, &fc.From, &toPtr); err != nil {
 			return nil, nil, nil, err
 		}
 		if toPtr != nil {

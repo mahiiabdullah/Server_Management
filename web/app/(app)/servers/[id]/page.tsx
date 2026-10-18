@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { TimeSeries, type ChartSeries } from "@/components/charts";
+import { GroupChips } from "@/components/groups";
 import { DeleteServer, EnableToggle } from "@/components/server-actions";
 import { ServerForm } from "@/components/server-form";
 import { EmptyState, ErrorState, LoadingBlock, StaleBanner } from "@/components/states";
@@ -56,13 +57,18 @@ export default function ServerDetailPage() {
             </div>
             <p className="mt-1 text-sm text-foreground-muted">
               <span className="font-mono">{s.target_addr}</span> · {s.hostname} · {s.environment}
-              {s.group_name && ` · ${s.group_name}`}
               {s.location && ` · ${s.location}`}
             </p>
             <p className="mt-1 text-xs text-foreground-muted">
               Last scrape {ago(m?.last_scrape)} · uptime {duration(m?.uptime_seconds)} · every {s.scrape_interval_s}s
               {m?.exporter_version && ` · Node Exporter ${m.exporter_version}`}
             </p>
+            {s.groups.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-foreground-muted">
+                <span>Groups</span>
+                <GroupChips groups={s.groups} />
+              </div>
+            )}
             {Object.keys(s.labels).length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
                 {Object.entries(s.labels).map(([k, v]) => (
@@ -154,7 +160,7 @@ export default function ServerDetailPage() {
 
       <div className="grid gap-5 lg:grid-cols-2">
         <PricingCard d={d} />
-        <Thresholds serverId={s.id} groupId={s.group_id} />
+        <Thresholds serverId={s.id} groupIds={s.groups.map((g) => g.id)} />
       </div>
       <ServerForm key={editing ? "edit-open" : "edit-closed"} open={editing} onClose={() => setEditing(false)} server={s} />
     </div>
@@ -369,10 +375,10 @@ function PricingCard({ d }: { d: ServerDetail }) {
   );
 }
 
-function Thresholds({ serverId, groupId }: { serverId: string; groupId: string | null }) {
+function Thresholds({ serverId, groupIds }: { serverId: string; groupIds: string[] }) {
   const rules = useQuery({ queryKey: ["rules"], queryFn: () => api<{ items: Rule[] }>("/alert-rules") });
   const applies = (rules.data?.items ?? []).filter(
-    (r) => r.enabled && r.kind !== "cost_increase" && r.kind !== "monitoring" && (r.scope_server_id ? r.scope_server_id === serverId : r.scope_group_id ? r.scope_group_id === groupId : true),
+    (r) => r.enabled && r.kind !== "cost_increase" && r.kind !== "monitoring" && (r.scope_server_id ? r.scope_server_id === serverId : r.scope_group_id ? groupIds.includes(r.scope_group_id) : true),
   );
   const unit = (r: Rule) => (r.kind === "disk_forecast" ? ` (forecast horizon ${r.threshold} h)` : r.kind === "unreachable" ? "" : ` > ${r.threshold}%`);
   return (

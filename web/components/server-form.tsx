@@ -2,16 +2,16 @@
 
 import { useState } from "react";
 import { api, isApiError } from "@/lib/api";
-import { useGroups, useRole, useWrite } from "@/lib/queries";
+import { useRole, useWrite } from "@/lib/queries";
 import type { Server } from "@/lib/schemas";
-import { Button, Drawer, Field, Input, Select, Textarea } from "./ui";
+import { GroupPicker } from "./groups";
+import { Button, Dialog, Field, Input, Textarea } from "./ui";
 
 type Probe = { reachable: boolean; node_exporter: boolean; node_exporter_version?: string; latency_ms: number; error?: string };
 
 /** Add or edit a server, with a live Node Exporter endpoint check. */
 export function ServerForm({ open, onClose, server }: { open: boolean; onClose: () => void; server?: Server }) {
   const { isAdmin } = useRole();
-  const groups = useGroups();
   const editing = !!server;
   // State starts from props; callers remount the form with a new `key` to reset it.
   const [v, setV] = useState(() =>
@@ -22,15 +22,15 @@ export function ServerForm({ open, onClose, server }: { open: boolean; onClose: 
           hostname: server.hostname,
           environment: server.environment,
           location: server.location ?? "",
-          group_id: server.group_id ?? "",
           scrape_interval_s: String(server.scrape_interval_s),
           labels: Object.entries(server.labels)
             .map(([k, val]) => `${k}=${val}`)
             .join(", "),
           notes: server.notes ?? "",
         }
-      : { name: "", exporter_url: "", hostname: "", environment: "production", location: "", group_id: "", scrape_interval_s: "30", labels: "", notes: "" },
+      : { name: "", exporter_url: "", hostname: "", environment: "production", location: "", scrape_interval_s: "30", labels: "", notes: "" },
   );
+  const [groupIds, setGroupIds] = useState<string[]>(() => server?.groups.map((g) => g.id) ?? []);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [probe, setProbe] = useState<{ state: "idle" | "checking" | "done"; result?: Probe; target?: string; error?: string }>({ state: "idle" });
@@ -71,7 +71,7 @@ export function ServerForm({ open, onClose, server }: { open: boolean; onClose: 
         name: v.name,
         environment: v.environment,
         location: v.location,
-        group_id: v.group_id,
+        group_ids: groupIds,
         scrape_interval_s: Number(v.scrape_interval_s),
         labels,
         notes: v.notes,
@@ -81,7 +81,7 @@ export function ServerForm({ open, onClose, server }: { open: boolean; onClose: 
       if (force) body.force = true;
       return editing ? api(`/servers/${server!.id}`, { method: "PATCH", body }) : api("/servers", { method: "POST", body });
     },
-    [["servers"], ["fleet"], ["server"], ["groups"]],
+    [["servers"], ["fleet"], ["server"], ["groups"], ["costs"]],
   );
 
   const submit = (e: React.FormEvent) => {
@@ -102,7 +102,7 @@ export function ServerForm({ open, onClose, server }: { open: boolean; onClose: 
   const unreachable = error && fields.exporter_url;
 
   return (
-    <Drawer
+    <Dialog
       open={open}
       onClose={onClose}
       title={editing ? `Edit ${server!.name}` : "Add server"}
@@ -168,27 +168,18 @@ export function ServerForm({ open, onClose, server }: { open: boolean; onClose: 
           <Field label="Environment" error={fields.environment}>
             {(id, d) => <Input id={id} aria-describedby={d} value={v.environment} onChange={set("environment")} />}
           </Field>
-          <Field label="Group" error={fields.group_id}>
-            {(id) => (
-              <Select id={id} value={v.group_id} onChange={set("group_id")}>
-                <option value="">No group</option>
-                {groups.data?.items.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
           <Field label="Hostname" error={fields.hostname} hint="Defaults to the URL host">
             {(id, d) => <Input id={id} aria-describedby={d} value={v.hostname} onChange={set("hostname")} />}
           </Field>
           <Field label="Scrape interval (s)" error={fields.scrape_interval_s} hint="10–300">
             {(id, d) => <Input id={id} aria-describedby={d} type="number" min={10} max={300} value={v.scrape_interval_s} onChange={set("scrape_interval_s")} />}
           </Field>
+          <Field label="Location" error={fields.location}>
+            {(id) => <Input id={id} value={v.location} onChange={set("location")} placeholder="e.g. OVH GRA, rack 4" />}
+          </Field>
         </div>
-        <Field label="Location" error={fields.location}>
-          {(id) => <Input id={id} value={v.location} onChange={set("location")} placeholder="e.g. OVH GRA, rack 4" />}
+        <Field label="Groups" error={fields.group_ids} hint="What this server is used for. Tick every product it serves.">
+          {(id, d) => <GroupPicker id={id} describedBy={d} value={groupIds} onChange={setGroupIds} />}
         </Field>
         <Field label="Labels" error={fields.labels} hint="key=value, comma separated (e.g. role=worker, team=platform)">
           {(id, d) => <Input id={id} aria-describedby={d} value={v.labels} onChange={set("labels")} />}
@@ -197,6 +188,6 @@ export function ServerForm({ open, onClose, server }: { open: boolean; onClose: 
           {(id) => <Textarea id={id} value={v.notes} onChange={set("notes")} />}
         </Field>
       </form>
-    </Drawer>
+    </Dialog>
   );
 }

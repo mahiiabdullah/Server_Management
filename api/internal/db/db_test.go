@@ -147,3 +147,43 @@ func TestSchemaConstraints(t *testing.T) {
 		}
 	})
 }
+
+// 0004 moves each server's single group into server_group_members, and back on down.
+func TestGroupMembersMigrationKeepsGroups(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.NewTestDB(t)
+	if err := db.MigrateTo(ctx, pool, 3); err != nil {
+		t.Fatal(err)
+	}
+	var g, s1, s2 string
+	if err := pool.QueryRow(ctx, `INSERT INTO server_groups (name) VALUES ('puku-bot') RETURNING id`).Scan(&g); err != nil {
+		t.Fatal(err)
+	}
+	ins := `INSERT INTO servers (name, hostname, exporter_url, target_addr, group_id) VALUES ($1, $1, $2, $2, $3) RETURNING id`
+	if err := pool.QueryRow(ctx, ins, "bm1", "10.0.0.1:9100", g).Scan(&s1); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, ins, "bm2", "10.0.0.2:9100", nil).Scan(&s2); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx, pool, quiet); err != nil {
+		t.Fatal(err)
+	}
+	var members []string
+	if err := pool.QueryRow(ctx, `SELECT array_agg(server_id::text) FROM server_group_members WHERE group_id = $1`, g).Scan(&members); err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 1 || members[0] != s1 {
+		t.Fatalf("members after up = %v, want [%s]", members, s1)
+	}
+	if err := db.MigrateTo(ctx, pool, 3); err != nil {
+		t.Fatal(err)
+	}
+	var back *string
+	if err := pool.QueryRow(ctx, `SELECT group_id::text FROM servers WHERE id = $1`, s1).Scan(&back); err != nil {
+		t.Fatal(err)
+	}
+	if back == nil || *back != g {
+		t.Fatalf("group after down = %v, want %s", back, g)
+	}
+}

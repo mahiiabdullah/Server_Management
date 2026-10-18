@@ -54,7 +54,7 @@ Roles: **V** viewer, **O** operator, **A** admin (each includes the ones before 
 | `GET /me` | V | `{user, csrf_token}` |
 | `POST /me/password` | V | `{current_password, new_password}` (≥12 chars); ends the user's other sessions |
 | `GET /fleet/summary` | V | Status counts, core-weighted CPU, memory/disk by capacity, network, alert counts, cost or `not_configured` |
-| `GET /servers` | V | `q`, `status` (csv), `environment`, `group` (id or `none`), `label=k=v`, `enabled`, `sort` (`name, status, cpu, memory, disk, uptime, last_scrape, cost, created_at, environment, group`, with `-` for descending; missing values always sort last), paging. Rows include live `metrics`, `status` and `monthly_cost` |
+| `GET /servers` | V | `q`, `status` (csv), `environment`, `group` (id or `none`; a server in several groups matches each), `label=k=v`, `enabled`, `sort` (`name, status, cpu, memory, disk, uptime, last_scrape, cost, created_at, environment, group`, with `-` for descending; missing values always sort last), paging. Rows include live `metrics`, `status` and `monthly_cost` |
 | `POST /servers/validate` | O | Checks and probes an exporter URL without saving; rate limited |
 | `POST /servers` | O | Registers a server (see below); 201. `force: true` (admin only) saves an unreachable endpoint |
 | `GET /servers/{id}` | V | Server, metrics with filesystems, pricing history, cost this month, open alerts, recent incidents |
@@ -63,7 +63,11 @@ Roles: **V** viewer, **O** operator, **A** admin (each includes the ones before 
 | `DELETE /servers/{id}` | A | Body `{"confirm_name": "<exact name>"}`; soft delete that keeps history and cost records |
 | `GET /servers/{id}/metrics` | V | `range=1h\|6h\|24h\|7d\|30d`, `series=cpu,memory,disk,network,load` → ≤ ~500 points per series, plus `coverage` |
 | `GET /servers/{id}/pricing` · `PUT /servers/{id}/pricing` | V · A | `{plan_id or null, effective_from}`. The plan in effect then is ended; later ones are replaced |
-| `GET /groups` · `POST`, `PATCH /groups/{id}` · `DELETE /groups/{id}` | V · O · A | |
+| `GET /groups` | V | `{items:[{id, name, description, server_count}]}`; with `summary=1` each item adds `status` counts, `open_alerts` by severity, `cost_to_date`, `cost_projected`, `shared_servers` |
+| `GET /groups/{id}` | V | `{group, servers (live, as in GET /servers), open_alerts, cost, currency, costs_configured}` |
+| `POST /groups` · `PATCH /groups/{id}` | O | `{name, description}`; on create, optional `server_ids` as first members. Names cannot contain commas |
+| `PUT /groups/{id}/servers` | O | `{server_ids:[…]}` replaces the group's members; servers stay in their other groups |
+| `DELETE /groups/{id}` | A | Removes the group and its memberships; refused while alert rules or fixed costs use it |
 | `GET /pricing-plans` · `POST`, `PATCH /pricing-plans/{id}` | V · A | Amount, unit and category are locked once a plan has been assigned |
 | `GET /fixed-costs` · `POST`, `PATCH`, `DELETE /fixed-costs/{id}` | V · A | Scope server, group or fleet; allocation `none`, `equal` or `cores` |
 | `GET /costs/summary` | V | `period=YYYY-MM`, `group=` → `{status:"not_configured"}` or `{result, actual, formula}` |
@@ -85,8 +89,12 @@ Roles: **V** viewer, **O** operator, **A** admin (each includes the ones before 
 
 ```json
 {"name": "bm2", "exporter_url": "http://10.0.0.12:9100/metrics", "environment": "production",
- "group_id": "…", "location": "OVH GRA", "scrape_interval_s": 30, "labels": {"role": "worker"}}
+ "group_ids": ["…", "…"], "location": "OVH GRA", "scrape_interval_s": 30, "labels": {"role": "worker"}}
 ```
+
+A server can be in any number of groups. `group_ids` replaces the list on `PATCH` (`[]` removes all); leave it out to keep
+the groups. Servers come back with `groups: [{id, name}]`, sorted by name. In cost results a server in several groups counts in
+full in each group's total (the split rule is not decided yet); the fleet total counts it once.
 
 1. The URL must be http(s) with no credentials, query or fragment, and a port in `ALLOWED_TARGET_PORTS`.
 2. The host is resolved **once**. Every address must be inside `ALLOWED_TARGET_CIDRS`, and none may be in

@@ -62,8 +62,11 @@ func (a *API) costSummary(w http.ResponseWriter, r *http.Request) {
 		var servers []cost.ServerCost
 		toDate, proj := decimal.Zero, decimal.Zero
 		for _, s := range res.Servers {
-			if s.GroupID == g {
-				servers = append(servers, s)
+			for _, ref := range s.Groups {
+				if ref.ID == g {
+					servers = append(servers, s)
+					break
+				}
 			}
 		}
 		var groups []cost.GroupCost

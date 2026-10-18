@@ -12,6 +12,10 @@
 //	projected     = the above to month end, assuming servers, prices and fixed costs that
 //	                are active now stay active
 //
+// Group totals: a server in several groups counts in full in each of them (how to
+// split a shared server between groups is not decided yet), so group totals can add
+// up to more than the fleet total. The fleet total counts every server once.
+//
 // Totals are rounded once, half-up to 2 decimals. CPU or memory utilisation is never
 // converted into money; fixed costs are only spread over servers by an explicit
 // allocation rule (equal split, or by CPU cores).
@@ -59,18 +63,24 @@ type FixedCost struct {
 	Category   string
 	ServerID   string // set: belongs to one server
 	GroupID    string // set: belongs to a group
+	GroupName  string
 	Allocation string // none | equal | cores (for group or fleet scope)
 	Interval
 }
 
+// GroupRef names a group a server belongs to.
+type GroupRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type ServerInfo struct {
-	ID        string
-	Name      string
-	GroupID   string
-	GroupName string
-	Cores     int // 0 = unknown
-	Deleted   bool
-	Activity  []Interval
+	ID       string
+	Name     string
+	Groups   []GroupRef
+	Cores    int // 0 = unknown
+	Deleted  bool
+	Activity []Interval
 }
 
 // Line is one explained component of a cost.
@@ -90,8 +100,7 @@ type Line struct {
 type ServerCost struct {
 	ServerID    string          `json:"server_id"`
 	Name        string          `json:"name"`
-	GroupID     string          `json:"group_id,omitempty"`
-	GroupName   string          `json:"group_name,omitempty"`
+	Groups      []GroupRef      `json:"groups"`
 	Deleted     bool            `json:"deleted,omitempty"`
 	Priced      bool            `json:"priced"`
 	ActiveHours decimal.Decimal `json:"active_hours"`
@@ -105,7 +114,10 @@ type GroupCost struct {
 	Name      string          `json:"name"`
 	ToDate    decimal.Decimal `json:"to_date"`
 	Projected decimal.Decimal `json:"projected"`
-	Shared    []Line          `json:"shared"` // group fixed costs not allocated to servers
+	Shared    []Line          `json:"shared"`     // group fixed costs not allocated to servers
+	ServerIDs []string        `json:"server_ids"` // member servers active this month
+	// Members that also belong to another group; their full cost counts in each.
+	SharedServerIDs []string `json:"shared_server_ids"`
 }
 
 type Result struct {
@@ -196,7 +208,8 @@ func Compute(year int, month time.Month, loc *time.Location, asOf time.Time, pro
 		if act == 0 {
 			continue // not active in this month: no cost, not listed
 		}
-		sc := &ServerCost{ServerID: s.ID, Name: s.Name, GroupID: s.GroupID, GroupName: s.GroupName, Deleted: s.Deleted,
+		groupsCopy := append([]GroupRef{}, s.Groups...)
+		sc := &ServerCost{ServerID: s.ID, Name: s.Name, Groups: groupsCopy, Deleted: s.Deleted,
 			ActiveHours: hours(activeWithin(s.Activity, start, cut, cut)), Lines: []Line{}}
 		byServer[s.ID] = sc
 		activeHrs[s.ID] = hours(act)
@@ -242,18 +255,19 @@ func Compute(year int, month time.Month, loc *time.Location, asOf time.Time, pro
 
 	// Fixed costs.
 	groups := map[string]*GroupCost{}
-	groupOf := func(id string) *GroupCost {
+	groupOf := func(id, name string) *GroupCost {
 		if groups[id] == nil {
-			name := ""
-			for _, s := range servers {
-				if s.GroupID == id {
-					name = s.GroupName
-					break
-				}
-			}
-			groups[id] = &GroupCost{GroupID: id, Name: name, Shared: []Line{}}
+			groups[id] = &GroupCost{GroupID: id, Name: name, Shared: []Line{}, ServerIDs: []string{}, SharedServerIDs: []string{}}
 		}
 		return groups[id]
+	}
+	inGroup := func(id, group string) bool {
+		for _, g := range info[id].Groups {
+			if g.ID == group {
+				return true
+			}
+		}
+		return false
 	}
 	for _, fc := range fixed {
 		monthly := fc.Amount
@@ -278,13 +292,13 @@ func Compute(year int, month time.Month, loc *time.Location, asOf time.Time, pro
 		// Candidates for allocation: servers in scope that are active this month.
 		var members []string
 		for _, id := range order {
-			if fc.GroupID == "" || info[id].GroupID == fc.GroupID {
+			if fc.GroupID == "" || inGroup(id, fc.GroupID) {
 				members = append(members, id)
 			}
 		}
 		if fc.Allocation == "none" || len(members) == 0 {
 			if fc.GroupID != "" {
-				g := groupOf(fc.GroupID)
+				g := groupOf(fc.GroupID, fc.GroupName)
 				g.Shared = append(g.Shared, base)
 			} else {
 				r.FleetShared = append(r.FleetShared, base)
@@ -334,9 +348,13 @@ func Compute(year int, month time.Month, loc *time.Location, asOf time.Time, pro
 		if !sc.Priced {
 			r.WithoutPricing = append(r.WithoutPricing, id)
 		}
-		if sc.GroupID != "" {
-			g := groupOf(sc.GroupID)
+		for _, ref := range sc.Groups {
+			g := groupOf(ref.ID, ref.Name)
 			g.ToDate, g.Projected = g.ToDate.Add(sc.ToDate), g.Projected.Add(sc.Projected)
+			g.ServerIDs = append(g.ServerIDs, id)
+			if len(sc.Groups) > 1 {
+				g.SharedServerIDs = append(g.SharedServerIDs, id)
+			}
 		}
 		r.ToDate, r.Projected = r.ToDate.Add(sc.ToDate), r.Projected.Add(sc.Projected)
 	}

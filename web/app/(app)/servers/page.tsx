@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { GroupChips } from "@/components/groups";
 import { DeleteServer, EnableToggle } from "@/components/server-actions";
 import { ServerForm } from "@/components/server-form";
 import { EmptyState, ErrorState, LoadingBlock, PageHeader, StaleBanner } from "@/components/states";
@@ -23,8 +24,8 @@ export default function ServersPage() {
 const COLUMNS: { key: string; label: string; sort?: string; className?: string }[] = [
   { key: "status", label: "Status", sort: "status" },
   { key: "name", label: "Name", sort: "name" },
-  { key: "group", label: "Group", sort: "group", className: "hidden md:table-cell" },
-  { key: "environment", label: "Env", sort: "environment", className: "hidden lg:table-cell" },
+  { key: "group", label: "Groups", sort: "group", className: "hidden md:table-cell" },
+  { key: "environment", label: "Env", sort: "environment", className: "hidden 2xl:table-cell" },
   { key: "cpu", label: "CPU", sort: "cpu" },
   { key: "memory", label: "Memory", sort: "memory", className: "hidden sm:table-cell" },
   { key: "disk", label: "Disk", sort: "disk", className: "hidden sm:table-cell" },
@@ -80,12 +81,14 @@ function Servers() {
   const rows = useMemo(() => q.data?.items ?? [], [q.data]);
   const groups = useMemo(() => {
     if (!groupBy) return [{ name: "", items: rows }];
+    // A server in several groups is listed under each of them.
     const m = new Map<string, Server[]>();
     for (const s of rows) {
-      const k = s.group_name ?? "No group";
-      m.set(k, [...(m.get(k) ?? []), s]);
+      for (const k of s.groups.length ? s.groups.map((g) => g.name) : ["No group"]) m.set(k, [...(m.get(k) ?? []), s]);
     }
-    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, items]) => ({ name, items }));
+    return [...m.entries()]
+      .sort(([a], [b]) => (a === "No group" ? 1 : b === "No group" ? -1 : a.localeCompare(b)))
+      .map(([name, items]) => ({ name, items }));
   }, [rows, groupBy]);
 
   return (
@@ -245,8 +248,10 @@ function Row({ s, currency, onEdit, canEdit }: { s: Server; currency: string; on
         </Link>
         <div className="font-mono text-xs text-foreground-muted">{s.target_addr}</div>
       </td>
-      <td className="hidden px-3 py-2.5 md:table-cell">{s.group_name ?? <span className="text-foreground-muted">—</span>}</td>
-      <td className="hidden px-3 py-2.5 lg:table-cell">{s.environment}</td>
+      <td className="hidden max-w-56 px-3 py-2.5 md:table-cell">
+        <GroupChips groups={s.groups} />
+      </td>
+      <td className="hidden px-3 py-2.5 2xl:table-cell">{s.environment}</td>
       <td className="px-3 py-2.5">
         <Meter value={m?.cpu} label={`${s.name} CPU`} threshold={0.9} />
       </td>

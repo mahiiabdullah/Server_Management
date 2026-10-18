@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { EmptyState, ErrorState, LoadingBlock, PageHeader } from "@/components/states";
 import { AlertStateBadge, SeverityBadge } from "@/components/status";
-import { Badge, Button, Card, Drawer, Field, Input, Pagination, Select, Tabs } from "@/components/ui";
+import { Badge, Button, Card, Dialog, Field, Input, Pagination, Select, Tabs } from "@/components/ui";
 import { api, isApiError } from "@/lib/api";
 import { ago, dateTime, duration } from "@/lib/format";
 import { useAlerts, useGroups, useRole, useWrite } from "@/lib/queries";
@@ -268,7 +268,7 @@ function RuleForm({ rule, onClose, groups, servers }: { rule: Rule | "new" | nul
   const fleetOnly = kind === "cost_increase" || kind === "monitoring";
   const thresholdLabel = kind === "disk_forecast" ? "Hours until full" : kind === "cost_increase" ? "Increase over 3-month average (%)" : "Threshold (%)";
   return (
-    <Drawer
+    <Dialog
       open={rule !== null}
       onClose={onClose}
       title={isNew ? "New alert rule" : "Edit alert rule"}
@@ -355,6 +355,6 @@ function RuleForm({ rule, onClose, groups, servers }: { rule: Rule | "new" | nul
           <input type="checkbox" checked={v.enabled} onChange={(e) => setV({ ...v, enabled: e.target.checked })} /> Enabled
         </label>
       </form>
-    </Drawer>
+    </Dialog>
   );
 }

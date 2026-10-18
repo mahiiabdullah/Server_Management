@@ -39,8 +39,11 @@ type Group struct {
 // Build returns the target groups for every enabled, live server, sorted by name.
 func (w *Writer) Build(ctx context.Context) ([]Group, error) {
 	rows, err := w.pool.Query(ctx, `
-		SELECT s.id, s.name, s.environment, coalesce(g.name, ''), s.exporter_url, s.target_addr, s.scrape_interval_s
-		FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id
+		SELECT s.id, s.name, s.environment,
+		       coalesce((SELECT string_agg(g.name, ',' ORDER BY lower(g.name)) FROM server_group_members m
+		                 JOIN server_groups g ON g.id = m.group_id WHERE m.server_id = s.id), ''),
+		       s.exporter_url, s.target_addr, s.scrape_interval_s
+		FROM servers s
 		WHERE s.deleted_at IS NULL AND s.enabled
 		ORDER BY lower(s.name), s.id`)
 	if err != nil {
@@ -49,9 +52,9 @@ func (w *Writer) Build(ctx context.Context) ([]Group, error) {
 	defer rows.Close()
 	out := []Group{}
 	for rows.Next() {
-		var id, name, env, group, exporterURL, target string
+		var id, name, env, groups, exporterURL, target string
 		var interval int
-		if err := rows.Scan(&id, &name, &env, &group, &exporterURL, &target, &interval); err != nil {
+		if err := rows.Scan(&id, &name, &env, &groups, &exporterURL, &target, &interval); err != nil {
 			return nil, err
 		}
 		scheme, path := "http", "/metrics"
@@ -67,8 +70,9 @@ func (w *Writer) Build(ctx context.Context) ([]Group, error) {
 			"__scrape_interval__": fmt.Sprintf("%ds", interval),
 			"__scrape_timeout__":  fmt.Sprintf("%ds", min(10, interval)),
 		}
-		if group != "" {
-			labels["group"] = group
+		if groups != "" {
+			// Comma-wrapped so one group matches with groups=~".*,name,.*".
+			labels["groups"] = "," + groups + ","
 		}
 		out = append(out, Group{Targets: []string{target}, Labels: labels})
 	}

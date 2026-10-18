@@ -154,8 +154,8 @@ func TestInactiveServerIsNotListed(t *testing.T) {
 }
 
 func TestFixedCostsScopesAndAllocation(t *testing.T) {
-	a := ServerInfo{ID: "a", Name: "a", GroupID: "g", GroupName: "G", Cores: 8, Activity: []Interval{{From: at(2026, 1, 1, 0)}}}
-	b := ServerInfo{ID: "b", Name: "b", GroupID: "g", GroupName: "G", Cores: 24, Activity: []Interval{{From: at(2026, 1, 1, 0)}}}
+	a := ServerInfo{ID: "a", Name: "a", Groups: []GroupRef{{ID: "g", Name: "G"}}, Cores: 8, Activity: []Interval{{From: at(2026, 1, 1, 0)}}}
+	b := ServerInfo{ID: "b", Name: "b", Groups: []GroupRef{{ID: "g", Name: "G"}}, Cores: 24, Activity: []Interval{{From: at(2026, 1, 1, 0)}}}
 	full := Interval{From: at(2026, 1, 1, 0)}
 	fixed := []FixedCost{
 		{Name: "rack", Amount: d("120"), Unit: "month", Category: "fixed", GroupID: "g", Allocation: "none", Interval: full},
@@ -186,4 +186,32 @@ func TestFixedCostProratedByEffectiveDates(t *testing.T) {
 	fc := FixedCost{Name: "bw", Amount: d("744"), Unit: "month", Category: "network", Allocation: "none", Interval: Interval{From: at(2026, 10, 11, 0)}}
 	r := Compute(2026, 10, utc, at(2026, 11, 1, 0), true, nil, nil, []FixedCost{fc})
 	eq(t, "to date", r.ToDate, "504")
+}
+
+func TestSharedServerCountsInEachGroupButOnceInFleet(t *testing.T) {
+	chat, bot := GroupRef{ID: "chat", Name: "puku-web-chat"}, GroupRef{ID: "bot", Name: "puku-bot"}
+	full := Interval{From: at(2026, 1, 1, 0)}
+	a := ServerInfo{ID: "a", Name: "a", Groups: []GroupRef{bot, chat}, Activity: []Interval{full}} // shared
+	b := ServerInfo{ID: "b", Name: "b", Groups: []GroupRef{chat}, Activity: []Interval{full}}
+	assigns := []Assignment{monthly("a", "100", at(2026, 1, 1, 0)), monthly("b", "40", at(2026, 1, 1, 0))}
+	// A group cost split equally over the group's servers, including the shared one.
+	fixed := []FixedCost{{Name: "cdn", Amount: d("10"), Unit: "month", Category: "network", GroupID: "chat", GroupName: "puku-web-chat",
+		Allocation: "equal", Interval: full}}
+	r := Compute(2026, 10, utc, at(2026, 11, 1, 0), true, []ServerInfo{a, b}, assigns, fixed)
+	eq(t, "fleet counts every server once", r.ToDate, "150")
+	got := map[string]GroupCost{}
+	for _, g := range r.Groups {
+		got[g.GroupID] = g
+	}
+	eq(t, "chat: a 105 + b 45", got["chat"].ToDate, "150")
+	eq(t, "bot: all of a", got["bot"].ToDate, "105")
+	if s := got["chat"].SharedServerIDs; len(s) != 1 || s[0] != "a" {
+		t.Errorf("chat shared servers = %v", s)
+	}
+	if s := got["chat"].ServerIDs; len(s) != 2 {
+		t.Errorf("chat servers = %v", s)
+	}
+	if r.Groups[0].Name != "puku-bot" || r.Groups[1].Name != "puku-web-chat" {
+		t.Errorf("groups not sorted by name: %+v", r.Groups)
+	}
 }

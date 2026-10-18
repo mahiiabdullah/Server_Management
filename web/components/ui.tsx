@@ -84,8 +84,11 @@ export function Textarea(p: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <textarea {...p} className={cx(inputCls, "h-auto min-h-20 py-2", p.className)} />;
 }
 
-/** Side drawer (modal dialog) with focus handling and Escape to close. */
-export function Drawer({ open, onClose, title, children, footer }: { open: boolean; onClose: () => void; title: string; children: ReactNode; footer?: ReactNode }) {
+/**
+ * Centered form dialog with focus handling and Escape to close. The body scrolls
+ * when the form is taller than the screen; on phones it fills the screen.
+ */
+export function Dialog({ open, onClose, title, children, footer, size = "md" }: { open: boolean; onClose: () => void; title: string; children: ReactNode; footer?: ReactNode; size?: "md" | "lg" }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current;
@@ -101,19 +104,23 @@ export function Drawer({ open, onClose, title, children, footer }: { open: boole
         e.preventDefault();
         onClose();
       }}
-      className="m-0 ml-auto h-full max-h-none w-full max-w-lg border-l border-border bg-surface p-0 text-foreground backdrop:bg-black/40"
+      className={cx(
+        "m-auto w-[calc(100%-2rem)] overflow-hidden rounded-card border border-border bg-surface p-0 text-foreground shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-[1px]",
+        size === "lg" ? "max-w-3xl" : "max-w-2xl",
+        "max-sm:h-dvh max-sm:max-h-none max-sm:w-full max-sm:max-w-none max-sm:rounded-none max-sm:border-0",
+      )}
       aria-label={title}
     >
       {open && (
-        <div className="flex h-full flex-col">
-          <header className="flex items-center justify-between border-b border-border px-5 py-4">
+        <div className="flex max-h-[min(88vh,56rem)] flex-col max-sm:h-full max-sm:max-h-none">
+          <header className="flex items-center justify-between border-b border-border px-6 py-4">
             <h2 className="text-base font-semibold">{title}</h2>
             <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close">
               ✕
             </Button>
           </header>
-          <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
-          {footer && <footer className="flex justify-end gap-2 border-t border-border px-5 py-3">{footer}</footer>}
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
+          {footer && <footer className="flex justify-end gap-2 border-t border-border bg-background/40 px-6 py-3">{footer}</footer>}
         </div>
       )}
     </dialog>

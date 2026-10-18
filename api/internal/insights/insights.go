@@ -69,19 +69,19 @@ func (s *Service) rules(ctx context.Context) Rules {
 
 // Evidence for one server over the window.
 type Evidence struct {
-	ServerID        string           `json:"server_id"`
-	Name            string           `json:"name"`
-	GroupName       *string          `json:"group_name"`
-	CPUP95          *float64         `json:"cpu_p95"`
-	MemoryP95       *float64         `json:"memory_p95"`
-	AvgCPU          *float64         `json:"avg_cpu"`
-	AvgMemory       *float64         `json:"avg_memory"`
-	Coverage        float64          `json:"coverage"`
-	Underutilized   bool             `json:"underutilized"`
-	Reason          string           `json:"reason"`
-	MonthlyCost     *decimal.Decimal `json:"monthly_cost"`     // projected this month, only when priced
-	PossibleSavings *decimal.Decimal `json:"possible_savings"` // only when priced
-	Recommendation  string           `json:"recommendation,omitempty"`
+	ServerID        string               `json:"server_id"`
+	Name            string               `json:"name"`
+	Groups          []inventory.GroupRef `json:"groups"`
+	CPUP95          *float64             `json:"cpu_p95"`
+	MemoryP95       *float64             `json:"memory_p95"`
+	AvgCPU          *float64             `json:"avg_cpu"`
+	AvgMemory       *float64             `json:"avg_memory"`
+	Coverage        float64              `json:"coverage"`
+	Underutilized   bool                 `json:"underutilized"`
+	Reason          string               `json:"reason"`
+	MonthlyCost     *decimal.Decimal     `json:"monthly_cost"`     // projected this month, only when priced
+	PossibleSavings *decimal.Decimal     `json:"possible_savings"` // only when priced
+	Recommendation  string               `json:"recommendation,omitempty"`
 }
 
 type Report struct {
@@ -125,7 +125,7 @@ func (s *Service) Underutilized(ctx context.Context, now time.Time) (*Report, er
 		}
 		rep.Evaluated++
 		u := util[sv.ID]
-		ev := Evidence{ServerID: sv.ID, Name: sv.Name, GroupName: sv.GroupName}
+		ev := Evidence{ServerID: sv.ID, Name: sv.Name, Groups: sv.Groups}
 		expected := window.Seconds() / float64(sv.ScrapeIntervalS)
 		if u != nil {
 			ev.CPUP95, ev.MemoryP95, ev.AvgCPU, ev.AvgMemory = u.CPUP95, u.MemoryP95, u.AvgCPU, u.AvgMemory
@@ -223,7 +223,7 @@ func (s *Service) Compare(ctx context.Context, metric string, a, b time.Time, gr
 	}
 	out := []CompareRow{}
 	for _, sv := range servers {
-		if groupID != "" && (sv.GroupID == nil || *sv.GroupID != groupID) {
+		if groupID != "" && !sv.InGroup(groupID) {
 			continue
 		}
 		r := CompareRow{ServerID: sv.ID, Name: sv.Name, A: pick(ua[sv.ID]), B: pick(ub[sv.ID])}

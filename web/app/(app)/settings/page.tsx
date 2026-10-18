@@ -4,12 +4,12 @@ import { Suspense, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { EmptyState, ErrorState, LoadingBlock, NoPermission, PageHeader } from "@/components/states";
-import { Badge, Button, Card, Drawer, Field, Input, Pagination, Select, Tabs } from "@/components/ui";
+import { Badge, Button, Card, Dialog, Field, Input, Pagination, Select, Tabs } from "@/components/ui";
 import { api, isApiError } from "@/lib/api";
 import { ago, date, dateTime, money } from "@/lib/format";
 import { useGroups, useRole, useWrite } from "@/lib/queries";
 
-type Tab = "pricing" | "groups" | "notifications" | "users" | "general" | "audit" | "account";
+type Tab = "pricing" | "notifications" | "users" | "general" | "audit" | "account";
 
 export default function SettingsPage() {
   return (
@@ -27,7 +27,6 @@ function Settings() {
   const tab = (params.get("tab") as Tab) || (isAdmin ? "pricing" : "account");
   const tabs: { id: Tab; label: string }[] = [
     { id: "pricing", label: "Pricing" },
-    { id: "groups", label: "Groups" },
     { id: "notifications", label: "Notifications" },
     { id: "users", label: "Users" },
     { id: "general", label: "General" },
@@ -44,8 +43,6 @@ function Settings() {
           <NoPermission />
         ) : tab === "pricing" ? (
           <Pricing />
-        ) : tab === "groups" ? (
-          <Groups />
         ) : tab === "notifications" ? (
           <Notifications />
         ) : tab === "users" ? (
@@ -232,7 +229,7 @@ function PlanForm({ plan, onClose, currency }: { plan: Plan | "new" | null; onCl
     [["plans"], ["costs"], ["fleet"], ["cost-trend"]],
   );
   return (
-    <Drawer
+    <Dialog
       open={plan !== null}
       onClose={onClose}
       title={isNew ? "New pricing plan" : "Edit pricing plan"}
@@ -281,7 +278,7 @@ function PlanForm({ plan, onClose, currency }: { plan: Plan | "new" | null; onCl
           </label>
         )}
       </form>
-    </Drawer>
+    </Dialog>
   );
 }
 
@@ -324,7 +321,7 @@ function FixedForm({ item, onClose, currency }: { item: Fixed | "new" | null; on
     [["fixed"], ["costs"], ["fleet"], ["cost-trend"]],
   );
   return (
-    <Drawer
+    <Dialog
       open={item !== null}
       onClose={onClose}
       title={isNew ? "New fixed cost" : "Edit fixed cost"}
@@ -405,7 +402,7 @@ function FixedForm({ item, onClose, currency }: { item: Fixed | "new" | null; on
           </Field>
         </div>
       </form>
-    </Drawer>
+    </Dialog>
   );
 }
 
@@ -451,68 +448,6 @@ function InvoiceImport() {
       </div>
       {result && <p className="mt-3 text-sm text-ok">● Imported {result.imported} row(s).</p>}
       {error && <p className="mt-3 text-sm text-crit">{error}</p>}
-    </Card>
-  );
-}
-
-// ---------------- groups ----------------
-
-function Groups() {
-  const { isOperator, isAdmin } = useRole();
-  const g = useGroups();
-  const [name, setName] = useState("");
-  const [e, setE] = useState<Record<string, string>>({});
-  const create = useWrite(() => api("/groups", { method: "POST", body: { name } }), [["groups"], ["servers"]]);
-  const del = useWrite((id: string) => api(`/groups/${id}`, { method: "DELETE" }), [["groups"], ["servers"]]);
-  return (
-    <Card title="Server groups">
-      {isOperator && (
-        <form
-          className="mb-4 flex flex-wrap items-end gap-2"
-          onSubmit={(ev) => {
-            ev.preventDefault();
-            setE({});
-            create.mutate(undefined, { onSuccess: () => setName(""), onError: (x) => setE(errs(x)) });
-          }}
-        >
-          <div className="w-64">
-            <Field label="New group" error={e.name ?? (e._ && !e.name ? e._ : undefined)}>
-              {(id) => <Input id={id} value={name} onChange={(x) => setName(x.target.value)} placeholder="e.g. control-plane" />}
-            </Field>
-          </div>
-          <Button type="submit" variant="primary" disabled={!name.trim()}>
-            Add group
-          </Button>
-        </form>
-      )}
-      {!g.data ? (
-        <LoadingBlock rows={3} />
-      ) : g.data.items.length === 0 ? (
-        <EmptyState title="No groups yet">Groups organise servers for filtering, cost breakdowns and rule scopes.</EmptyState>
-      ) : (
-        <ul className="divide-y divide-border text-sm">
-          {g.data.items.map((x) => (
-            <li key={x.id} className="flex items-center justify-between py-2">
-              <span>
-                {x.name} <span className="text-foreground-muted">· {x.server_count} server(s)</span>
-              </span>
-              {isAdmin && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-crit"
-                  onClick={() =>
-                    confirm(`Delete group "${x.name}"? Its servers stay, without a group.`) &&
-                    del.mutate(x.id, { onError: (err) => alert(isApiError(err) ? err.message : "Delete failed.") })
-                  }
-                >
-                  Delete
-                </Button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
     </Card>
   );
 }
@@ -607,7 +542,7 @@ function ChannelForm({ channel, onClose }: { channel: Channel | "new" | null; on
     [["channels"]],
   );
   return (
-    <Drawer
+    <Dialog
       open={channel !== null}
       onClose={onClose}
       title={isNew ? "New notification channel" : "Edit channel"}
@@ -658,7 +593,7 @@ function ChannelForm({ channel, onClose }: { channel: Channel | "new" | null; on
           <input type="checkbox" checked={v.enabled} onChange={(x) => setV({ ...v, enabled: x.target.checked })} /> Enabled
         </label>
       </form>
-    </Drawer>
+    </Dialog>
   );
 }
 
@@ -746,7 +681,7 @@ function Users() {
           </table>
         </div>
       )}
-      <Drawer
+      <Dialog
         open={adding}
         onClose={() => setAdding(false)}
         title="Add user"
@@ -788,7 +723,7 @@ function Users() {
             {(id) => <Input id={id} type="password" autoComplete="new-password" value={v.password} onChange={(x) => setV({ ...v, password: x.target.value })} />}
           </Field>
         </form>
-      </Drawer>
+      </Dialog>
     </Card>
   );
 }

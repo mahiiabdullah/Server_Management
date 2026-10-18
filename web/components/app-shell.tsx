@@ -12,6 +12,7 @@ import { LoadingBlock } from "./states";
 const NAV = [
   { href: "/", label: "Overview", icon: "◫" },
   { href: "/servers", label: "Servers", icon: "▤" },
+  { href: "/groups", label: "Groups", icon: "◈" },
   { href: "/costs", label: "Costs", icon: "¤" },
   { href: "/alerts", label: "Alerts", icon: "△" },
   { href: "/insights", label: "Insights", icon: "◔" },

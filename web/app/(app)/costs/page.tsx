@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { GroupChips } from "@/components/groups";
 import { Suspense, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { CostTrendChart } from "@/components/charts";
@@ -161,6 +162,7 @@ function Summary({ data, trend }: { data: Configured; trend: ReturnType<typeof u
             <thead className="text-left text-xs text-foreground-muted">
               <tr>
                 <th scope="col" className="py-1.5 font-medium">Group</th>
+                <th scope="col" className="py-1.5 text-right font-medium">Servers</th>
                 <th scope="col" className="py-1.5 text-right font-medium">To date</th>
                 <th scope="col" className="py-1.5 text-right font-medium">Projected</th>
                 <th scope="col" className="hidden py-1.5 text-right font-medium sm:table-cell">Shared costs</th>
@@ -169,7 +171,15 @@ function Summary({ data, trend }: { data: Configured; trend: ReturnType<typeof u
             <tbody className="divide-y divide-border">
               {r.groups.map((g) => (
                 <tr key={g.group_id}>
-                  <td className="py-2">{g.name || "Unnamed group"}</td>
+                  <td className="py-2">
+                    <Link href={`/groups/${g.group_id}`} className="text-accent hover:underline">
+                      {g.name || "Unnamed group"}
+                    </Link>
+                  </td>
+                  <td className="py-2 text-right font-mono">
+                    {g.server_ids.length}
+                    {g.shared_server_ids.length > 0 && <span className="ml-1 text-xs text-warn">({g.shared_server_ids.length} shared)</span>}
+                  </td>
                   <td className="py-2 text-right font-mono">{money(g.to_date, cur)}</td>
                   <td className="py-2 text-right font-mono">{money(g.projected, cur)}</td>
                   <td className="hidden py-2 text-right text-xs text-foreground-muted sm:table-cell">{g.shared.map((l) => l.name).join(", ") || "—"}</td>
@@ -177,6 +187,12 @@ function Summary({ data, trend }: { data: Configured; trend: ReturnType<typeof u
               ))}
             </tbody>
           </table>
+          {r.groups.some((g) => g.shared_server_ids.length > 0) && (
+            <p className="mt-3 text-xs text-foreground-muted">
+              A server in several groups counts in full in each of them, so group totals can add up to more than the fleet total. The fleet total counts every
+              server once. How to split a shared server between groups is not decided yet.
+            </p>
+          )}
         </Card>
       )}
 
@@ -189,7 +205,7 @@ function Summary({ data, trend }: { data: Configured; trend: ReturnType<typeof u
               <thead className="text-left text-xs text-foreground-muted">
                 <tr>
                   <th scope="col" className="py-1.5 pr-3 font-medium">Server</th>
-                  <th scope="col" className="hidden py-1.5 pr-3 font-medium md:table-cell">Group</th>
+                  <th scope="col" className="hidden py-1.5 pr-3 font-medium md:table-cell">Groups</th>
                   <th scope="col" className="py-1.5 pr-3 text-right font-medium">Active h</th>
                   <th scope="col" className="py-1.5 pr-3 text-right font-medium">To date</th>
                   <th scope="col" className="py-1.5 pr-3 text-right font-medium">Projected</th>
@@ -211,7 +227,9 @@ function Summary({ data, trend }: { data: Configured; trend: ReturnType<typeof u
                         </Link>
                       )}
                     </td>
-                    <td className="hidden py-2 pr-3 md:table-cell">{s.group_name || "—"}</td>
+                    <td className="hidden py-2 pr-3 md:table-cell">
+                      <GroupChips groups={s.groups} />
+                    </td>
                     <td className="py-2 pr-3 text-right font-mono">{num(s.active_hours, 1)}</td>
                     <td className="py-2 pr-3 text-right font-mono">{s.priced || s.lines.length ? money(s.to_date, cur) : <span className="text-warn">not priced</span>}</td>
                     <td className="py-2 pr-3 text-right font-mono">{s.priced || s.lines.length ? money(s.projected, cur) : "—"}</td>

@@ -2,6 +2,7 @@
 
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
+import { z } from "zod";
 import { api, isApiError } from "./api";
 import * as S from "./schemas";
 
@@ -92,11 +93,17 @@ export function useUnderutilized(enabled = true) {
   });
 }
 
+// Group query keys all start with "groups", so invalidating ["groups"] refreshes every view.
 export function useGroups() {
-  return useQuery({
-    queryKey: ["groups"],
-    queryFn: () => api<{ items: { id: string; name: string; description: string | null; server_count: number }[] }>("/groups"),
-  });
+  return useQuery({ queryKey: ["groups"], queryFn: () => api("/groups", { schema: z.object({ items: z.array(S.Group) }) }) });
+}
+
+export function useGroupSummaries() {
+  return useQuery({ queryKey: ["groups", "summary"], queryFn: () => api("/groups?summary=1", { schema: S.GroupSummaries }), refetchInterval: LIVE });
+}
+
+export function useGroup(id: string) {
+  return useQuery({ queryKey: ["groups", "detail", id], queryFn: () => api(`/groups/${id}`, { schema: S.GroupDetail }), refetchInterval: LIVE });
 }
 
 /** A mutation that invalidates the given query keys on success. */

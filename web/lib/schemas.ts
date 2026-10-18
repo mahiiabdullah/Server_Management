@@ -47,6 +47,9 @@ export const Metrics = z.object({
 });
 export type Metrics = z.infer<typeof Metrics>;
 
+export const GroupRef = z.object({ id: z.string(), name: z.string() });
+export type GroupRef = z.infer<typeof GroupRef>;
+
 export const Server = z.object({
   id: z.string(),
   name: z.string(),
@@ -55,8 +58,7 @@ export const Server = z.object({
   target_addr: z.string(),
   environment: z.string(),
   location: z.string().nullable(),
-  group_id: z.string().nullable(),
-  group_name: z.string().nullable(),
+  groups: z.array(GroupRef),
   enabled: z.boolean(),
   scrape_interval_s: z.number(),
   cpu_cores: n,
@@ -161,8 +163,7 @@ export type CostLine = z.infer<typeof CostLine>;
 export const ServerCost = z.object({
   server_id: z.string(),
   name: z.string(),
-  group_id: z.string().optional(),
-  group_name: z.string().optional(),
+  groups: z.array(GroupRef),
   deleted: z.boolean().optional(),
   priced: z.boolean(),
   active_hours: z.number(),
@@ -211,6 +212,51 @@ export const History = z.object({
 });
 export type History = z.infer<typeof History>;
 
+export const GroupCost = z.object({
+  group_id: z.string(),
+  name: z.string(),
+  to_date: z.number(),
+  projected: z.number(),
+  shared: z.array(CostLine),
+  server_ids: z.array(z.string()),
+  shared_server_ids: z.array(z.string()),
+});
+export type GroupCost = z.infer<typeof GroupCost>;
+
+export const Group = z.object({ id: z.string(), name: z.string(), description: z.string().nullable(), server_count: z.number() });
+export type Group = z.infer<typeof Group>;
+
+const Severities = z.object({ critical: z.number(), warning: z.number(), info: z.number() });
+
+export const GroupSummaries = z.object({
+  items: z.array(
+    Group.extend({
+      status: z.object({ online: z.number(), offline: z.number(), unknown: z.number(), disabled: z.number() }),
+      open_alerts: Severities,
+      cost_to_date: n,
+      cost_projected: n,
+      shared_servers: z.number(),
+    }),
+  ),
+  as_of: iso.nullable(),
+  metrics_available: z.boolean(),
+  currency: z.string(),
+  costs_configured: z.boolean(),
+});
+export type GroupSummaries = z.infer<typeof GroupSummaries>;
+
+export const GroupDetail = z.object({
+  group: Group,
+  servers: z.array(Server),
+  as_of: iso.nullable(),
+  metrics_available: z.boolean(),
+  open_alerts: z.array(Alert),
+  cost: GroupCost.nullable(),
+  currency: z.string(),
+  costs_configured: z.boolean(),
+});
+export type GroupDetail = z.infer<typeof GroupDetail>;
+
 const Formula = z.record(z.string(), z.union([z.string(), z.number()]));
 
 export const CostSummary = z.union([
@@ -231,7 +277,7 @@ export const CostSummary = z.union([
       by_category: z.record(z.string(), z.number()),
       by_category_projected: z.record(z.string(), z.number()),
       servers: z.array(ServerCost),
-      groups: z.array(z.object({ group_id: z.string(), name: z.string(), to_date: z.number(), projected: z.number(), shared: z.array(CostLine) })),
+      groups: z.array(GroupCost),
       fleet_shared: z.array(CostLine),
       servers_without_pricing: z.array(z.string()),
       proration: z.boolean(),
@@ -252,7 +298,7 @@ export type CostTrend = z.infer<typeof CostTrend>;
 export const Evidence = z.object({
   server_id: z.string(),
   name: z.string(),
-  group_name: z.string().nullable(),
+  groups: z.array(GroupRef),
   cpu_p95: n,
   memory_p95: n,
   avg_cpu: n,

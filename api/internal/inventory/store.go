@@ -28,8 +28,7 @@ type Server struct {
 	TargetAddr      string            `json:"target_addr"`
 	Environment     string            `json:"environment"`
 	Location        *string           `json:"location"`
-	GroupID         *string           `json:"group_id"`
-	GroupName       *string           `json:"group_name"`
+	Groups          []GroupRef        `json:"groups"` // sorted by name
 	Enabled         bool              `json:"enabled"`
 	ScrapeIntervalS int               `json:"scrape_interval_s"`
 	CPUCores        *int              `json:"cpu_cores"`
@@ -39,6 +38,22 @@ type Server struct {
 	Labels          map[string]string `json:"labels"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
+}
+
+// GroupRef names one group a server belongs to.
+type GroupRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// InGroup reports whether the server is a member of group id.
+func (s *Server) InGroup(id string) bool {
+	for _, g := range s.Groups {
+		if g.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 type Group struct {
@@ -54,14 +69,16 @@ func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 const serverCols = `
 	s.id, s.name, s.hostname, s.exporter_url, s.target_addr, s.environment, s.location,
-	s.group_id, g.name, s.enabled, s.scrape_interval_s, s.cpu_cores, s.memory_bytes, s.disk_bytes,
+	coalesce((SELECT jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name) ORDER BY lower(g.name))
+	          FROM server_group_members m JOIN server_groups g ON g.id = m.group_id WHERE m.server_id = s.id), '[]'),
+	s.enabled, s.scrape_interval_s, s.cpu_cores, s.memory_bytes, s.disk_bytes,
 	s.notes, coalesce((SELECT jsonb_object_agg(l.key, l.value) FROM server_labels l WHERE l.server_id = s.id), '{}'),
 	s.created_at, s.updated_at`
 
 func scanServer(row pgx.Row) (*Server, error) {
 	var s Server
 	err := row.Scan(&s.ID, &s.Name, &s.Hostname, &s.ExporterURL, &s.TargetAddr, &s.Environment, &s.Location,
-		&s.GroupID, &s.GroupName, &s.Enabled, &s.ScrapeIntervalS, &s.CPUCores, &s.MemoryBytes, &s.DiskBytes,
+		&s.Groups, &s.Enabled, &s.ScrapeIntervalS, &s.CPUCores, &s.MemoryBytes, &s.DiskBytes,
 		&s.Notes, &s.Labels, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -73,7 +90,7 @@ func scanServer(row pgx.Row) (*Server, error) {
 // depend on live metrics happen in the API layer after joining the metrics snapshot.
 func (st *Store) List(ctx context.Context) ([]*Server, error) {
 	rows, err := st.pool.Query(ctx, `SELECT `+serverCols+`
-		FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id
+		FROM servers s
 		WHERE s.deleted_at IS NULL ORDER BY lower(s.name)`)
 	if err != nil {
 		return nil, err
@@ -92,7 +109,7 @@ func (st *Store) List(ctx context.Context) ([]*Server, error) {
 
 func (st *Store) Get(ctx context.Context, id string) (*Server, error) {
 	s, err := scanServer(st.pool.QueryRow(ctx, `SELECT `+serverCols+`
-		FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id
+		FROM servers s
 		WHERE s.id = $1 AND s.deleted_at IS NULL`, id))
 	if db.IsNoRows(err) {
 		return nil, ErrNotFound
@@ -107,7 +124,7 @@ type Input struct {
 	Endpoint        *Endpoint
 	Environment     *string
 	Location        *string
-	GroupID         *string // "" clears the group
+	GroupIDs        *[]string // nil = unchanged; empty = no groups
 	ScrapeIntervalS *int
 	CPUCores        *int
 	MemoryBytes     *int64
@@ -147,11 +164,11 @@ func (st *Store) Create(ctx context.Context, in Input, enabled bool, ev audit.Ev
 	defer tx.Rollback(ctx)
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO servers (name, hostname, exporter_url, target_addr, environment, location, group_id,
+		INSERT INTO servers (name, hostname, exporter_url, target_addr, environment, location,
 		                     enabled, scrape_interval_s, cpu_cores, memory_bytes, disk_bytes, notes)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
 		*in.Name, *in.Hostname, in.Endpoint.CleanURL, in.Endpoint.TargetAddr, *in.Environment, nullable(in.Location),
-		nullable(in.GroupID), enabled, *in.ScrapeIntervalS, in.CPUCores, in.MemoryBytes, in.DiskBytes, nullable(in.Notes),
+		enabled, *in.ScrapeIntervalS, in.CPUCores, in.MemoryBytes, in.DiskBytes, nullable(in.Notes),
 	).Scan(&id)
 	if err != nil {
 		return nil, conflict(err)
@@ -159,12 +176,15 @@ func (st *Store) Create(ctx context.Context, in Input, enabled bool, ev audit.Ev
 	if err := replaceLabels(ctx, tx, id, in.Labels); err != nil {
 		return nil, err
 	}
+	if err := replaceGroups(ctx, tx, id, in.GroupIDs); err != nil {
+		return nil, err
+	}
 	if enabled {
 		if _, err := tx.Exec(ctx, `INSERT INTO server_activity (server_id, active_from) VALUES ($1, now())`, id); err != nil {
 			return nil, err
 		}
 	}
-	s, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id WHERE s.id = $1`, id))
+	s, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s WHERE s.id = $1`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +193,19 @@ func (st *Store) Create(ctx context.Context, in Input, enabled bool, ev audit.Ev
 		return nil, err
 	}
 	return s, tx.Commit(ctx)
+}
+
+// replaceGroups sets the server's groups to exactly ids (nil leaves them unchanged).
+func replaceGroups(ctx context.Context, tx pgx.Tx, id string, ids *[]string) error {
+	if ids == nil {
+		return nil
+	}
+	list := append([]string{}, *ids...) // never a nil slice: NULL would match nothing
+	if _, err := tx.Exec(ctx, `DELETE FROM server_group_members WHERE server_id = $1 AND NOT (group_id = ANY($2::uuid[]))`, id, list); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO server_group_members (server_id, group_id) SELECT $1::uuid, unnest($2::uuid[]) ON CONFLICT DO NOTHING`, id, list)
+	return err
 }
 
 func replaceLabels(ctx context.Context, tx pgx.Tx, id string, labels map[string]string) error {
@@ -197,7 +230,7 @@ func (st *Store) Update(ctx context.Context, id string, in Input, ev audit.Event
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	before, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id
+	before, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s
 		WHERE s.id = $1 AND s.deleted_at IS NULL FOR UPDATE OF s`, id))
 	if db.IsNoRows(err) {
 		return nil, ErrNotFound
@@ -209,7 +242,6 @@ func (st *Store) Update(ctx context.Context, id string, in Input, ev audit.Event
 	if in.Endpoint != nil {
 		exporterURL, targetAddr = &in.Endpoint.CleanURL, &in.Endpoint.TargetAddr
 	}
-	clearGroup := in.GroupID != nil && *in.GroupID == ""
 	_, err = tx.Exec(ctx, `
 		UPDATE servers SET
 		  name              = coalesce($2, name),
@@ -218,15 +250,14 @@ func (st *Store) Update(ctx context.Context, id string, in Input, ev audit.Event
 		  target_addr       = coalesce($5, target_addr),
 		  environment       = coalesce($6, environment),
 		  location          = CASE WHEN $7::boolean THEN $8 ELSE location END,
-		  group_id          = CASE WHEN $9::boolean THEN NULL WHEN $10::uuid IS NOT NULL THEN $10::uuid ELSE group_id END,
-		  scrape_interval_s = coalesce($11, scrape_interval_s),
-		  cpu_cores         = coalesce($12, cpu_cores),
-		  memory_bytes      = coalesce($13, memory_bytes),
-		  disk_bytes        = coalesce($14, disk_bytes),
-		  notes             = CASE WHEN $15::boolean THEN $16 ELSE notes END
+		  scrape_interval_s = coalesce($9, scrape_interval_s),
+		  cpu_cores         = coalesce($10, cpu_cores),
+		  memory_bytes      = coalesce($11, memory_bytes),
+		  disk_bytes        = coalesce($12, disk_bytes),
+		  notes             = CASE WHEN $13::boolean THEN $14 ELSE notes END
 		WHERE id = $1`,
 		id, in.Name, in.Hostname, exporterURL, targetAddr, in.Environment,
-		in.Location != nil, nullable(in.Location), clearGroup, nullable(in.GroupID),
+		in.Location != nil, nullable(in.Location),
 		in.ScrapeIntervalS, in.CPUCores, in.MemoryBytes, in.DiskBytes, in.Notes != nil, nullable(in.Notes))
 	if err != nil {
 		return nil, conflict(err)
@@ -234,7 +265,10 @@ func (st *Store) Update(ctx context.Context, id string, in Input, ev audit.Event
 	if err := replaceLabels(ctx, tx, id, in.Labels); err != nil {
 		return nil, err
 	}
-	after, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id WHERE s.id = $1`, id))
+	if err := replaceGroups(ctx, tx, id, in.GroupIDs); err != nil {
+		return nil, err
+	}
+	after, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s WHERE s.id = $1`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +313,7 @@ func (st *Store) SetEnabled(ctx context.Context, id string, enabled bool, ev aud
 			return nil, err
 		}
 	}
-	s, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id WHERE s.id = $1`, id))
+	s, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s WHERE s.id = $1`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -309,7 +343,7 @@ func (st *Store) Delete(ctx context.Context, id string, ev audit.Event) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	before, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s LEFT JOIN server_groups g ON g.id = s.group_id
+	before, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers s
 		WHERE s.id = $1 AND s.deleted_at IS NULL FOR UPDATE OF s`, id))
 	if db.IsNoRows(err) {
 		return ErrNotFound
@@ -360,7 +394,9 @@ func (st *Store) FillCapacity(ctx context.Context, id string, cores *int, mem, d
 func (st *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	rows, err := st.pool.Query(ctx, `
 		SELECT g.id, g.name, g.description, count(s.id)
-		FROM server_groups g LEFT JOIN servers s ON s.group_id = g.id AND s.deleted_at IS NULL
+		FROM server_groups g
+		LEFT JOIN server_group_members m ON m.group_id = g.id
+		LEFT JOIN servers s ON s.id = m.server_id AND s.deleted_at IS NULL
 		GROUP BY g.id ORDER BY lower(g.name)`)
 	if err != nil {
 		return nil, err
@@ -377,10 +413,73 @@ func (st *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	return out, rows.Err()
 }
 
-func (st *Store) GroupExists(ctx context.Context, id string) (bool, error) {
-	var ok bool
-	err := st.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM server_groups WHERE id = $1)`, id).Scan(&ok)
-	return ok, err
+// GetGroup returns one group with its live server count.
+func (st *Store) GetGroup(ctx context.Context, id string) (*Group, error) {
+	var g Group
+	err := st.pool.QueryRow(ctx, `
+		SELECT g.id, g.name, g.description, count(s.id)
+		FROM server_groups g
+		LEFT JOIN server_group_members m ON m.group_id = g.id
+		LEFT JOIN servers s ON s.id = m.server_id AND s.deleted_at IS NULL
+		WHERE g.id = $1 GROUP BY g.id`, id).Scan(&g.ID, &g.Name, &g.Description, &g.ServerCount)
+	if db.IsNoRows(err) {
+		return nil, ErrNotFound
+	}
+	return &g, err
+}
+
+// GroupsExist reports whether every id is a group (ids must be distinct UUIDs).
+func (st *Store) GroupsExist(ctx context.Context, ids []string) (bool, error) {
+	var n int
+	err := st.pool.QueryRow(ctx, `SELECT count(*) FROM server_groups WHERE id = ANY($1::uuid[])`, ids).Scan(&n)
+	return n == len(ids), err
+}
+
+// SetGroupServers makes exactly serverIDs (live servers, distinct UUIDs) the
+// members of group id. Deleted servers keep their past membership.
+func (st *Store) SetGroupServers(ctx context.Context, id string, serverIDs []string, ev audit.Event) (*Group, error) {
+	tx, err := st.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	serverIDs = append([]string{}, serverIDs...) // never a nil slice: NULL would match nothing
+	var name string
+	if err := tx.QueryRow(ctx, `SELECT name FROM server_groups WHERE id = $1 FOR UPDATE`, id).Scan(&name); err != nil {
+		if db.IsNoRows(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	var live int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM servers WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`, serverIDs).Scan(&live); err != nil {
+		return nil, err
+	}
+	if live != len(serverIDs) {
+		return nil, &ConflictError{"server_ids", "One or more servers do not exist."}
+	}
+	var before []string
+	if err := tx.QueryRow(ctx, `SELECT coalesce(array_agg(m.server_id::text ORDER BY m.server_id), '{}') FROM server_group_members m
+		JOIN servers s ON s.id = m.server_id AND s.deleted_at IS NULL WHERE m.group_id = $1`, id).Scan(&before); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM server_group_members m USING servers s
+		WHERE m.group_id = $1 AND s.id = m.server_id AND s.deleted_at IS NULL AND NOT (m.server_id = ANY($2::uuid[]))`, id, serverIDs); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO server_group_members (server_id, group_id) SELECT unnest($2::uuid[]), $1::uuid ON CONFLICT DO NOTHING`, id, serverIDs); err != nil {
+		return nil, err
+	}
+	ev.Action, ev.TargetType, ev.TargetID = "group.set_servers", "group", id
+	ev.Before = map[string]any{"name": name, "server_ids": before}
+	ev.After = map[string]any{"name": name, "server_ids": serverIDs}
+	if err := audit.Record(ctx, tx, ev); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return st.GetGroup(ctx, id)
 }
 
 func (st *Store) SaveGroup(ctx context.Context, id string, name string, description *string, ev audit.Event) (*Group, error) {

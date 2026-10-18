@@ -81,6 +81,25 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	return nil
 }
 
+// MigrateTo moves the schema up or down to version. Used by migration tests.
+func MigrateTo(ctx context.Context, pool *pgxpool.Pool, version int64) error {
+	p, closeDB, err := newProvider(pool)
+	if err != nil {
+		return err
+	}
+	defer closeDB()
+	cur, err := p.GetDBVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if version < cur {
+		_, err = p.DownTo(ctx, version)
+	} else {
+		_, err = p.UpTo(ctx, version)
+	}
+	return err
+}
+
 // MigrateDownAll rolls back every migration. Used by the migration round-trip test.
 func MigrateDownAll(ctx context.Context, pool *pgxpool.Pool) error {
 	p, closeDB, err := newProvider(pool)

@@ -162,6 +162,7 @@ type Filter struct {
 	States     []string
 	Severities []string
 	ServerID   string
+	ServerIDs  []string // non-nil: only alerts on these servers (empty matches none)
 	Page       int
 	PageSize   int
 }
@@ -182,6 +183,9 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Alert, int, error) {
 	}
 	if f.ServerID != "" {
 		add("a.server_id = ?", f.ServerID)
+	}
+	if f.ServerIDs != nil {
+		add("a.server_id = ANY(?::uuid[])", f.ServerIDs)
 	}
 	w := strings.Join(where, " AND ")
 	var total int
@@ -353,4 +357,27 @@ func itoa(i int) string {
 		return digits[i : i+1]
 	}
 	return itoa(i/10) + digits[i%10:i%10+1]
+}
+
+// OpenByServer counts firing and acknowledged alerts per server and severity.
+func (s *Store) OpenByServer(ctx context.Context) (map[string]map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT server_id, severity, count(*) FROM alerts
+		WHERE state IN ('firing','acknowledged') AND server_id IS NOT NULL GROUP BY server_id, severity`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]int{}
+	for rows.Next() {
+		var id, sev string
+		var n int
+		if err := rows.Scan(&id, &sev, &n); err != nil {
+			return nil, err
+		}
+		if out[id] == nil {
+			out[id] = map[string]int{}
+		}
+		out[id][sev] = n
+	}
+	return out, rows.Err()
 }

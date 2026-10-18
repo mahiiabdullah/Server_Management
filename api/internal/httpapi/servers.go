@@ -94,8 +94,8 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request) {
 	envs, groups := map[string]bool{}, map[string]string{}
 	for _, v := range views {
 		envs[v.Environment] = true
-		if v.GroupID != nil {
-			groups[*v.GroupID] = *v.GroupName
+		for _, g := range v.Groups {
+			groups[g.ID] = g.Name
 		}
 	}
 
@@ -111,8 +111,8 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request) {
 		case text != "" && !strings.Contains(strings.ToLower(v.Name), text) && !strings.Contains(strings.ToLower(v.Hostname), text) &&
 			!strings.Contains(v.TargetAddr, text):
 		case q.Get("environment") != "" && v.Environment != q.Get("environment"):
-		case q.Get("group") == "none" && v.GroupID != nil:
-		case q.Get("group") != "" && q.Get("group") != "none" && (v.GroupID == nil || *v.GroupID != q.Get("group")):
+		case q.Get("group") == "none" && len(v.Groups) > 0:
+		case q.Get("group") != "" && q.Get("group") != "none" && !v.InGroup(q.Get("group")):
 		case len(statuses) > 0 && !contains(statuses, v.Status):
 		case q.Get("enabled") == "true" && !v.Enabled, q.Get("enabled") == "false" && v.Enabled:
 		case labelKey != "" && v.Labels[labelKey] != labelVal:
@@ -213,10 +213,10 @@ func sortViews(v []*serverView, key string) error {
 		cmp = str(func(s *serverView) string { return s.Environment })
 	case "group":
 		cmp = str(func(s *serverView) string {
-			if s.GroupName == nil {
+			if len(s.Groups) == 0 {
 				return "￿"
 			}
-			return strings.ToLower(*s.GroupName)
+			return strings.ToLower(s.Groups[0].Name)
 		})
 	case "status":
 		cmp = func(a, b *serverView) (int, bool) { return statusOrder[a.Status] - statusOrder[b.Status], true }
@@ -269,7 +269,7 @@ type serverRequest struct {
 	ExporterURL     *string           `json:"exporter_url"`
 	Environment     *string           `json:"environment"`
 	Location        *string           `json:"location"`
-	GroupID         *string           `json:"group_id"`
+	GroupIDs        *[]string         `json:"group_ids"`
 	ScrapeIntervalS *int              `json:"scrape_interval_s"`
 	CPUCores        *int              `json:"cpu_cores"`
 	MemoryBytes     *int64            `json:"memory_bytes"`
@@ -349,16 +349,16 @@ func (a *API) checkServer(ctx context.Context, req *serverRequest, create bool) 
 			fields["labels"] = "Label keys use letters, digits and underscores; values at most 255 characters."
 		}
 	}
-	if req.GroupID != nil && *req.GroupID != "" {
-		if !uuidRe.MatchString(*req.GroupID) {
-			fields["group_id"] = "Unknown group."
-		} else if ok, err := a.inv.GroupExists(ctx, *req.GroupID); err != nil {
+	if req.GroupIDs != nil {
+		ids, msg, err := a.checkGroupIDs(ctx, *req.GroupIDs)
+		if err != nil {
 			return in, nil, err
-		} else if !ok {
-			fields["group_id"] = "Unknown group."
 		}
+		if msg != "" {
+			fields["group_ids"] = msg
+		}
+		in.GroupIDs = &ids
 	}
-	in.GroupID = req.GroupID
 
 	var ep *inventory.Endpoint
 	if req.ExporterURL != nil {
@@ -624,70 +624,6 @@ func (a *API) serverMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"range": rng.Name, "step_s": int(rng.Step.Seconds()), "series": out, "coverage": coverage})
-}
-
-// ---- groups ----
-
-func (a *API) listGroups(w http.ResponseWriter, r *http.Request) {
-	g, err := a.inv.ListGroups(r.Context())
-	if err != nil {
-		fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": g})
-}
-
-type groupRequest struct {
-	Name        string  `json:"name"`
-	Description *string `json:"description"`
-}
-
-func (a *API) saveGroup(w http.ResponseWriter, r *http.Request, id string) {
-	var req groupRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		fail(w, r, err)
-		return
-	}
-	req.Name = strings.TrimSpace(req.Name)
-	if req.Name == "" || len(req.Name) > 64 {
-		fail(w, r, errValidation(map[string]string{"name": "Use 1–64 characters."}))
-		return
-	}
-	g, err := a.inv.SaveGroup(r.Context(), id, req.Name, req.Description, a.event(r))
-	if err != nil {
-		fail(w, r, err)
-		return
-	}
-	a.targets.Trigger() // the group name is a Prometheus label
-	status := http.StatusOK
-	if id == "" {
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, g)
-}
-
-func (a *API) createGroup(w http.ResponseWriter, r *http.Request) { a.saveGroup(w, r, "") }
-func (a *API) updateGroup(w http.ResponseWriter, r *http.Request) {
-	id, ok := idParam(r, "id")
-	if !ok {
-		fail(w, r, errNotFound)
-		return
-	}
-	a.saveGroup(w, r, id)
-}
-
-func (a *API) deleteGroup(w http.ResponseWriter, r *http.Request) {
-	id, ok := idParam(r, "id")
-	if !ok {
-		fail(w, r, errNotFound)
-		return
-	}
-	if err := a.inv.DeleteGroup(r.Context(), id, a.event(r)); err != nil {
-		fail(w, r, err)
-		return
-	}
-	a.targets.Trigger()
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- fleet summary ----
