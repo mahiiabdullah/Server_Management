@@ -82,6 +82,10 @@ func cmdApply(args []string) error {
 	}
 	failed := 0
 	for name, s := range res.Status.Servers {
+		if !p.Servers[name].IsReady() {
+			fmt.Printf("%-6s skipped: not ready (server setup not done)\n", name)
+			continue
+		}
 		if s.OK {
 			fmt.Printf("%-6s ok (%d managed accounts)\n", name, s.Accounts)
 		} else {
