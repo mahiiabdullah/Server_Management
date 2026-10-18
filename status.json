@@ -1,18 +1,26 @@
 {
-  "generated_at": "2026-10-18T13:44:39.135158805Z",
-  "commit": "cff050e3d74b07ccf2c487db04e6d274895e3fec",
-  "grants": {},
+  "generated_at": "2026-10-18T14:02:55.472669613Z",
+  "commit": "f712aaaa16b290e6921eb7db68bc1759505155c9",
+  "grants": {
+    "0005": {
+      "status": "active",
+      "cert_expires": "2026-10-25T14:01:30Z",
+      "servers": {
+        "demo": "ok"
+      }
+    }
+  },
   "servers": {
     "bm3": {
       "ok": false,
       "error": "not ready: server setup not done (not contacted)",
       "accounts": 0,
-      "applied_at": "2026-10-18T13:44:39.135158805Z"
+      "applied_at": "2026-10-18T14:02:55.472669613Z"
     },
     "demo": {
       "ok": true,
-      "accounts": 0,
-      "applied_at": "2026-10-18T13:44:39.135158805Z"
+      "accounts": 1,
+      "applied_at": "2026-10-18T14:02:55.472669613Z"
     }
   }
 }
