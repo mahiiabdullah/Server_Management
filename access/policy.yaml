@@ -27,7 +27,7 @@ max_sudo_days: 7
 # covers a production server needs production_approvals, a sudo request
 # sudo_approvals, anything else one.
 production_approvals: 1
-sudo_approvals: 2
+sudo_approvals: 1
 
 # People who may approve requests. Their email links the GitHub account to the
 # dashboard account, so nobody can approve their own request. Keep more admins

@@ -49,7 +49,7 @@ dashboard service in `api/internal/accessreq`, server scripts in `deploy/ssh-acc
   `access-policy`). Sudo cannot be requested for a group.
 - **Approval numbers are set in the policy.** `production_approvals` (now 1) is how
   many admins must approve a request that covers a production server;
-  `sudo_approvals` (now 2) is for sudo; anything else needs one. Left out, both are 2.
+  `sudo_approvals` (now 1) is for sudo; anything else needs one. Left out, both are 2.
   The apply job enforces the production number per server: if a group later gains
   a production server, grants with fewer approvals are not applied there (their
   other servers keep working) and the dashboard says why.
@@ -147,7 +147,7 @@ certificate login alongside existing logins and touches nothing else (see its he
 
 List only servers that went through step 4 in `access/policy.yaml`. Nobody can approve
 their own request, so keep more admins than the largest of `production_approvals` and
-`sudo_approvals` (with sudo at 2, that is at least three admins before allowing sudo).
+`sudo_approvals` (with both at 1, two admins are enough).
 
 ### 6. Access groups
 
