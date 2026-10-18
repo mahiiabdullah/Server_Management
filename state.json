@@ -1,5 +1,14 @@
 {
-  "approved": {},
-  "approvals": {},
-  "issued": {}
+  "approved": {
+    "0004": "95a75650d54bbae8f7b6e1e18f168b82e9f2362c80ca975bb9b30076a72b2e54"
+  },
+  "approvals": {
+    "0004": 1
+  },
+  "issued": {
+    "0004": {
+      "serial": 4,
+      "expires": "2026-10-25T13:35:29Z"
+    }
+  }
 }
