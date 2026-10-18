@@ -1,8 +1,8 @@
 // Package access implements the SSH access workflow: the shared grants file,
 // the access policy, request validation, pull-request checks and SSH
 // certificate signing. The same code runs in the dashboard (to build requests),
-// in CI (to validate pull requests) and on bm2 (to apply grants), so all three
-// enforce identical rules.
+// in CI (to validate pull requests) and on the runner (to apply grants), so all
+// three enforce identical rules.
 package access
 
 import (
@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -23,12 +24,16 @@ const (
 	PolicyPath = "access/policy.yaml"
 )
 
-// Grant is one person's access to one or more servers, until Expires.
+// Grant is one person's access to servers, until Expires. Servers can be named
+// directly, or through access groups defined in the policy; a group grant
+// follows the group, so servers added to or removed from it later are covered
+// or dropped on the next apply.
 type Grant struct {
 	ID          string    `yaml:"id" json:"id"`
 	User        string    `yaml:"user" json:"user"`   // Unix account name
 	Email       string    `yaml:"email" json:"email"` // dashboard sign-in of the requester
-	Servers     []string  `yaml:"servers" json:"servers"`
+	Servers     []string  `yaml:"servers,omitempty" json:"servers"`
+	Groups      []string  `yaml:"groups,omitempty" json:"groups,omitempty"`
 	Sudo        bool      `yaml:"sudo" json:"sudo"`
 	Reason      string    `yaml:"reason" json:"reason"`
 	PublicKey   string    `yaml:"public_key" json:"public_key"`
@@ -57,11 +62,12 @@ type Admin struct {
 
 // Policy is access/policy.yaml.
 type Policy struct {
-	Servers       map[string]Server `yaml:"servers" json:"servers"`
-	MaxDays       int               `yaml:"max_days" json:"max_days"`
-	MaxSudoDays   int               `yaml:"max_sudo_days" json:"max_sudo_days"`
-	Admins        []Admin           `yaml:"admins" json:"admins"`
-	ReservedUsers []string          `yaml:"reserved_users" json:"-"`
+	Servers       map[string]Server   `yaml:"servers" json:"servers"`
+	Groups        map[string][]string `yaml:"groups" json:"groups"` // access group → server names
+	MaxDays       int                 `yaml:"max_days" json:"max_days"`
+	MaxSudoDays   int                 `yaml:"max_sudo_days" json:"max_sudo_days"`
+	Admins        []Admin             `yaml:"admins" json:"admins"`
+	ReservedUsers []string            `yaml:"reserved_users" json:"-"`
 }
 
 func strictDecode(data []byte, v any) error {
@@ -101,7 +107,54 @@ func ParsePolicy(data []byte) (*Policy, error) {
 	case len(p.Admins) == 0:
 		return nil, fmt.Errorf("%s: at least one admin is required", PolicyPath)
 	}
+	for name, servers := range p.Groups {
+		if !groupNameRe.MatchString(name) {
+			return nil, fmt.Errorf("%s: group %q: use 1-64 letters, digits, spaces, dots, dashes or underscores", PolicyPath, name)
+		}
+		seen := map[string]bool{}
+		for _, s := range servers {
+			if _, ok := p.Servers[s]; !ok {
+				return nil, fmt.Errorf("%s: group %q: unknown server %q", PolicyPath, name, s)
+			}
+			if seen[s] {
+				return nil, fmt.Errorf("%s: group %q: %q listed twice", PolicyPath, name, s)
+			}
+			seen[s] = true
+		}
+	}
 	return &p, nil
+}
+
+var groupNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$`)
+
+// ServersOf is every server a grant covers under this policy: its named
+// servers plus the current members of its groups, sorted and unique.
+func (p *Policy) ServersOf(g Grant) []string {
+	set := map[string]bool{}
+	for _, s := range g.Servers {
+		set[s] = true
+	}
+	for _, grp := range g.Groups {
+		for _, s := range p.Groups[grp] {
+			set[s] = true
+		}
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// GroupNames returns the policy's access groups, sorted.
+func (p *Policy) GroupNames() []string {
+	out := make([]string, 0, len(p.Groups))
+	for g := range p.Groups {
+		out = append(out, g)
+	}
+	sort.Strings(out)
+	return out
 }
 
 const fileHeader = `# SSH access grants. Managed by the BM Monitor dashboard: every change arrives
@@ -142,12 +195,12 @@ func (f *File) Find(id string) *Grant {
 func (g Grant) Active(t time.Time) bool { return !t.Before(g.RequestedAt) && t.Before(g.Expires) }
 
 // NeedsTwoApprovals reports whether adding or changing g needs two admins:
-// sudo, or any production server.
+// sudo, or any production server it covers (directly or through a group).
 func (p *Policy) NeedsTwoApprovals(g Grant) bool {
 	if g.Sudo {
 		return true
 	}
-	for _, s := range g.Servers {
+	for _, s := range p.ServersOf(g) {
 		if p.Servers[s].Production {
 			return true
 		}

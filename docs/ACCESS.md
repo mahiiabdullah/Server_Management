@@ -1,7 +1,8 @@
 # SSH access workflow
 
-Engineers request SSH access in the BM Monitor dashboard. The request becomes a
-pull request that adds one entry to `access/grants.yaml`. CI checks it, an admin
+Engineers request SSH access in the BM Monitor dashboard, to chosen servers or to
+a whole **access group** (for example every server of `puku-bot`). The request
+becomes a pull request that adds one entry to `access/grants.yaml`. CI checks it, an admin
 approves and merges it, and a job on a trusted machine signs a short-lived SSH
 certificate and creates the engineer's account. Nothing is emailed: the engineer
 sees the status, the certificate and the connect command in the dashboard.
@@ -16,7 +17,8 @@ and are done only when you decide to.
 |---|---|---|
 | Request form, "My SSH access", "All grants" | Dashboard (`/access`) | Builds the request with the same rules CI uses, opens the PR, shows status and certificate |
 | `access/grants.yaml` | This repository | The one shared list of every grant |
-| `access/policy.yaml` | This repository | Servers, maximum durations, admins, reserved names |
+| `access/policy.yaml` | This repository | Servers, access groups, maximum durations, admins, reserved names |
+| "SSH access" card on each group page | Dashboard (`/groups/…`) | Compares the dashboard group with its access group and opens the policy pull request that syncs them |
 | `access-validate` workflow | GitHub-hosted runner, read-only, no secrets | Checks the PR: only the requester's new entry, valid key, known servers, limits; counts admin approvals |
 | `access-apply` workflow | Self-hosted runner `bm-access` | Verifies approvals again, signs certificates, reconciles accounts, publishes status to the `access-state` branch |
 | `accessctl` | `api/cmd/accessctl` | The tool behind both workflows |
@@ -40,6 +42,22 @@ dashboard service in `api/internal/accessreq`, server scripts in `deploy/ssh-acc
   dismiss stale approvals, require the `access-validate` check).
 - **Requests only add.** A request adds one new grant; it cannot change or remove
   other entries. Extending access is a new request. Revokes only remove one entry.
+- **Group grants follow the group.** A grant for an access group covers the
+  group's servers at every apply: a server added to the group is covered, a server
+  removed loses the account. Changing a group is a change to `access/policy.yaml`,
+  so it is a reviewed pull request (the dashboard opens it, labelled
+  `access-policy`). Sudo cannot be requested for a group.
+- **Production needs two approvals, per server.** The apply job reaches a
+  production server only for grants approved by two admins. If a group later gains
+  a production server, grants approved by one admin are not applied there (their
+  other servers keep working) and the dashboard says why.
+- **Policy changes can be enforced too (optional).** With the repository variable
+  `ACCESS_VERIFY_POLICY=true`, the apply job only uses a policy that came from a
+  merged pull request approved by an admin other than its author (for a dashboard
+  proposal: other than the admin who requested it). Otherwise it keeps applying the
+  last approved policy, saved on the `access-state` branch, so revocations keep
+  working. CI shows the same check on policy pull requests. This needs at least two
+  admins in the policy, because nobody can approve their own pull request.
 - **The tool and policy CI uses come from `main`,** never from the pull request.
 - **Who can write to the repository:** only admins. Engineers never need GitHub
   access; the dashboard's bot opens their pull requests.
@@ -107,6 +125,10 @@ always on and able to reach the servers (WireGuard). Then, on it:
 4. Turn the apply job on: repository *Settings → Secrets and variables → Actions →
    Variables*, add `ACCESS_APPLY_ENABLED` = `true`. Until then `access-apply` is skipped,
    so nothing queues for a runner that does not exist.
+5. Once there are two admins in `access/policy.yaml`: merge one policy pull request that
+   another admin approved (adding the second admin is a good one), then add the variable
+   `ACCESS_VERIFY_POLICY` = `true`. From then on an unreviewed change to the policy is
+   ignored by the apply job.
 
 ### 4. Each server — changes the server; only when decided
 
@@ -124,6 +146,15 @@ certificate login alongside existing logins and touches nothing else (see its he
 List only servers that went through step 4 in `access/policy.yaml`. Production and
 sudo requests need two admins, so add at least two more admins before allowing them.
 
+### 6. Access groups
+
+On a group page, the **SSH access** card shows the group's servers next to its access
+group. An admin presses **Make this an access group** (or **Propose access change**);
+the bot opens a pull request that sets `groups.<name>` in `access/policy.yaml` to the
+group's servers that the policy knows. Servers not in the policy's server list (SSH setup
+not done) are left out and listed. Another admin approves and merges it. Then anyone can
+choose **By group** in the request form.
+
 ## Testing
 
 ```bash
@@ -136,4 +167,5 @@ the real `accessctl apply`, and a fake GitHub. It checks 17 behaviours: approved
 works, unapproved access is refused, the key alone (without a certificate) is refused,
 the certificate does not work for root, existing accounts are untouched, the deploy
 key cannot run commands or be used from elsewhere, revocation removes access and lists
-the serial, and a grant tampered on `main` is not applied.
+the serial, a grant tampered on `main` is not applied, a group grant gives access, and
+removing the server from the group removes it (20 checks).

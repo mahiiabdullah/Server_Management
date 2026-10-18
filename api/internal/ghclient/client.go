@@ -161,9 +161,12 @@ type PR struct {
 	State   string   `json:"state"` // open | closed
 	Merged  bool     `json:"merged"`
 	HTMLURL string   `json:"html_url"`
+	Body    string   `json:"body"`
 	HeadSHA string   `json:"-"`
 	HeadRef string   `json:"-"`
 	BaseRef string   `json:"-"`
+	BaseSHA string   `json:"-"`
+	Author  string   `json:"-"` // login of whoever opened it
 	Labels  []string `json:"-"`
 	Merge   string   `json:"merge_commit_sha"`
 }
@@ -177,7 +180,11 @@ type prJSON struct {
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
 	LabelsJSON []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
@@ -185,7 +192,7 @@ type prJSON struct {
 
 func (p prJSON) toPR() PR {
 	out := p.PR
-	out.HeadSHA, out.HeadRef, out.BaseRef = p.Head.SHA, p.Head.Ref, p.Base.Ref
+	out.HeadSHA, out.HeadRef, out.BaseRef, out.BaseSHA, out.Author = p.Head.SHA, p.Head.Ref, p.Base.Ref, p.Base.SHA, p.User.Login
 	out.Merged = out.Merged || p.MergedAt != nil
 	for _, l := range p.LabelsJSON {
 		out.Labels = append(out.Labels, l.Name)
@@ -224,6 +231,35 @@ func (c *Client) PRsForBranch(ctx context.Context, branch, state string) ([]PR, 
 	var out []prJSON
 	q := url.Values{"head": {owner + ":" + branch}, "state": {state}, "per_page": {"30"}, "sort": {"created"}, "direction": {"desc"}}
 	if err := c.do(ctx, http.MethodGet, c.repoPath("/pulls?%s", q.Encode()), nil, &out); err != nil {
+		return nil, err
+	}
+	prs := make([]PR, len(out))
+	for i, p := range out {
+		prs[i] = p.toPR()
+	}
+	return prs, nil
+}
+
+// LastCommitFor returns the newest commit on ref that changed path.
+func (c *Client) LastCommitFor(ctx context.Context, path, ref string) (string, error) {
+	var out []struct {
+		SHA string `json:"sha"`
+	}
+	q := url.Values{"path": {path}, "sha": {ref}, "per_page": {"1"}}
+	if err := c.do(ctx, http.MethodGet, c.repoPath("/commits?%s", q.Encode()), nil, &out); err != nil {
+		return "", err
+	}
+	if len(out) == 0 {
+		return "", ErrNotFound
+	}
+	return out[0].SHA, nil
+}
+
+// PRsForCommit lists the pull requests a commit belongs to (for a merge commit:
+// the pull request it merged).
+func (c *Client) PRsForCommit(ctx context.Context, sha string) ([]PR, error) {
+	var out []prJSON
+	if err := c.do(ctx, http.MethodGet, c.repoPath("/commits/%s/pulls", sha), nil, &out); err != nil {
 		return nil, err
 	}
 	prs := make([]PR, len(out))

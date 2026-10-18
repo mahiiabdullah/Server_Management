@@ -15,6 +15,7 @@ type Config =
       enabled: true;
       repo: string;
       servers: { name: string; host: string; production: boolean }[];
+      groups: { name: string; servers: string[]; production: boolean }[];
       max_days: number;
       max_sudo_days: number;
       admins: number;
@@ -29,6 +30,7 @@ type AccessRequest = {
   requester_email: string;
   unix_user: string;
   servers: string[];
+  groups: string[];
   sudo: boolean;
   reason: string;
   key_fingerprint: string | null;
@@ -46,6 +48,8 @@ type GrantView = {
   user: string;
   email: string;
   servers: string[];
+  groups?: string[];
+  covers: string[];
   sudo: boolean;
   reason: string;
   requested_at: string;
@@ -54,6 +58,22 @@ type GrantView = {
   status_reason?: string;
   server_state?: Record<string, string>;
 };
+
+/** What a request or grant names: servers and "group x" entries. */
+function Targets({ servers, groups }: { servers: string[]; groups?: string[] }) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      {servers.map((s) => (
+        <span key={s}>{s}</span>
+      ))}
+      {(groups ?? []).map((g) => (
+        <Badge key={g} tone="accent">
+          group {g}
+        </Badge>
+      ))}
+    </span>
+  );
+}
 
 const STATUS: Record<AccessRequest["status"], { tone: "ok" | "warn" | "crit" | "muted" | "accent"; label: string }> = {
   pr_open: { tone: "warn", label: "Waiting for approval" },
@@ -144,18 +164,27 @@ function Mine({ cfg }: { cfg: Extract<Config, { enabled: true }> }) {
 }
 
 function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>; blocked: boolean }) {
+  const [mode, setMode] = useState<"servers" | "groups">("servers");
   const [servers, setServers] = useState<string[]>([]);
-  const [sudo, setSudo] = useState(false);
+  const [groups, setGroups] = useState<string[]>([]);
+  const [sudoChoice, setSudo] = useState(false);
+  const sudo = mode === "servers" && sudoChoice;
   const [days, setDays] = useState("7");
   const [reason, setReason] = useState("");
   const [key, setKey] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState<AccessRequest | null>(null);
   const max = sudo ? cfg.max_sudo_days : cfg.max_days;
-  const needsTwo = sudo || servers.some((s) => cfg.servers.find((x) => x.name === s)?.production);
+  const needsTwo =
+    sudo || (mode === "servers" ? servers.some((s) => cfg.servers.find((x) => x.name === s)?.production) : groups.some((g) => cfg.groups.find((x) => x.name === g)?.production));
+  const chosen = mode === "servers" ? servers.length : groups.length;
 
   const create = useWrite(
-    () => api<AccessRequest>("/access/requests", { method: "POST", body: { servers, sudo, days: Number(days), reason, public_key: key } }),
+    () =>
+      api<AccessRequest>("/access/requests", {
+        method: "POST",
+        body: { ...(mode === "servers" ? { servers } : { groups }), sudo, days: Number(days), reason, public_key: key },
+      }),
     [["access-requests"]],
   );
 
@@ -171,7 +200,7 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
             </a>{" "}
             is waiting for {needsTwo ? "two admins" : "an admin"} to approve it. This page updates by itself once access is granted.
           </p>
-          <Button onClick={() => (setDone(null), setKey(""), setReason(""), setServers([]))}>New request</Button>
+          <Button onClick={() => (setDone(null), setKey(""), setReason(""), setServers([]), setGroups([]))}>New request</Button>
         </div>
       ) : (
         <form
@@ -195,23 +224,72 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
             You will log in as <code className="font-mono">{cfg.unix_user}</code>
             {cfg.unix_user_error && <span className="text-crit"> ({cfg.unix_user_error})</span>}.
           </p>
-          <fieldset className="flex flex-col gap-1.5">
-            <legend className="mb-1 text-xs font-medium text-foreground-muted">Servers</legend>
-            {cfg.servers.map((s) => (
-              <label key={s.name} className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={servers.includes(s.name)} onChange={(e) => setServers(e.target.checked ? [...servers, s.name] : servers.filter((x) => x !== s.name))} />
-                <span className="font-medium">{s.name}</span>
-                <span className="font-mono text-xs text-foreground-muted">{s.host}</span>
-                {s.production ? <Badge tone="warn">production</Badge> : <Badge>testing</Badge>}
-              </label>
+          <div role="radiogroup" aria-label="Request access to" className="grid grid-cols-2 gap-1 rounded-card border border-border bg-background p-1 text-sm">
+            {(
+              [
+                ["servers", "By server"],
+                ["groups", "By group"],
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                type="button"
+                role="radio"
+                aria-checked={mode === m}
+                onClick={() => setMode(m)}
+                className={mode === m ? "rounded bg-surface px-3 py-1.5 font-medium shadow-sm" : "rounded px-3 py-1.5 text-foreground-muted hover:text-foreground"}
+              >
+                {label}
+              </button>
             ))}
-            {errors.servers && <p className="text-xs text-crit">{errors.servers}</p>}
-          </fieldset>
+          </div>
+          {mode === "servers" ? (
+            <fieldset className="flex flex-col gap-1.5">
+              <legend className="mb-1 text-xs font-medium text-foreground-muted">Servers</legend>
+              {cfg.servers.map((s) => (
+                <label key={s.name} className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={servers.includes(s.name)} onChange={(e) => setServers(e.target.checked ? [...servers, s.name] : servers.filter((x) => x !== s.name))} />
+                  <span className="font-medium">{s.name}</span>
+                  <span className="font-mono text-xs text-foreground-muted">{s.host}</span>
+                  {s.production ? <Badge tone="warn">production</Badge> : <Badge>testing</Badge>}
+                </label>
+              ))}
+              {errors.servers && <p className="text-xs text-crit">{errors.servers}</p>}
+            </fieldset>
+          ) : (
+            <fieldset className="flex flex-col gap-1.5">
+              <legend className="mb-1 text-xs font-medium text-foreground-muted">Access groups</legend>
+              {cfg.groups.length === 0 ? (
+                <p className="text-sm text-foreground-muted">No access groups yet. An admin creates them from a group page (SSH access card).</p>
+              ) : (
+                cfg.groups.map((g) => (
+                  <label key={g.name} className="flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={groups.includes(g.name)}
+                      disabled={g.servers.length === 0}
+                      onChange={(e) => setGroups(e.target.checked ? [...groups, g.name] : groups.filter((x) => x !== g.name))}
+                    />
+                    <span>
+                      <span className="font-medium">{g.name}</span> {g.production && <Badge tone="warn">has production</Badge>}
+                      <span className="block text-xs text-foreground-muted">{g.servers.length ? g.servers.join(", ") : "no servers yet"}</span>
+                    </span>
+                  </label>
+                ))
+              )}
+              <p className="text-xs text-foreground-muted">Group access follows the group: servers added to it later are covered too, removed ones are not.</p>
+              {(errors.groups || errors.servers) && <p className="text-xs text-crit">{errors.groups || errors.servers}</p>}
+            </fieldset>
+          )}
           <label className="flex items-start gap-2 text-sm">
-            <input type="checkbox" className="mt-1" checked={sudo} onChange={(e) => setSudo(e.target.checked)} />
+            <input type="checkbox" className="mt-1" checked={sudo} disabled={mode === "groups"} onChange={(e) => setSudo(e.target.checked)} />
             <span>
               I need sudo (root) on these servers
-              <span className="block text-xs text-foreground-muted">Needs two admin approvals and at most {cfg.max_sudo_days} days.</span>
+              <span className="block text-xs text-foreground-muted">
+                {mode === "groups" ? "Not available for groups: request sudo for specific servers." : `Needs two admin approvals and at most ${cfg.max_sudo_days} days.`}
+              </span>
+              {errors.sudo && <span className="block text-xs text-crit">{errors.sudo}</span>}
             </span>
           </label>
           <Field label={`How many days (1–${max})`} error={errors.days}>
@@ -235,7 +313,7 @@ function RequestForm({ cfg, blocked }: { cfg: Extract<Config, { enabled: true }>
           <p className="text-xs text-foreground-muted">
             {needsTwo ? "This request needs two admin approvals." : "This request needs one admin approval."} You cannot approve your own request.
           </p>
-          <Button type="submit" variant="primary" disabled={create.isPending || blocked || servers.length === 0}>
+          <Button type="submit" variant="primary" disabled={create.isPending || blocked || chosen === 0}>
             {create.isPending ? "Opening pull request…" : "Send request"}
           </Button>
         </form>
@@ -270,14 +348,15 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
 
 function RequestCard({ r, cfg }: { r: AccessRequest; cfg: Extract<Config, { enabled: true }> }) {
   const s = STATUS[r.status];
-  const hosts = r.servers.map((n) => cfg.servers.find((x) => x.name === n)?.host ?? n);
+  const covered = [...new Set([...r.servers, ...r.groups.flatMap((g) => cfg.groups.find((x) => x.name === g)?.servers ?? [])])];
+  const hosts = covered.map((n) => cfg.servers.find((x) => x.name === n)?.host ?? n);
   return (
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <p className="font-medium">
             {r.kind === "revoke" ? "Revoke of " : ""}
-            {r.servers.join(", ")} {r.sudo && <Badge tone="warn">sudo</Badge>}
+            <Targets servers={r.servers} groups={r.groups} /> {r.sudo && <Badge tone="warn">sudo</Badge>}
           </p>
           <p className="mt-0.5 text-xs text-foreground-muted">
             Grant {r.grant_id} · requested {dateTime(r.requested_at)}
@@ -348,7 +427,16 @@ function AllGrants() {
                       <div className="text-xs text-foreground-muted">{g.email}</div>
                     </td>
                     <td className="py-2 pr-3">
-                      {g.servers.join(", ")} {g.sudo && <Badge tone="warn">sudo</Badge>}
+                      <Targets servers={g.servers} groups={g.groups} /> {g.sudo && <Badge tone="warn">sudo</Badge>}
+                      {(g.groups?.length ?? 0) > 0 && <div className="mt-0.5 text-xs text-foreground-muted">covers {g.covers.length ? g.covers.join(", ") : "no servers"}</div>}
+                      {g.server_state && Object.entries(g.server_state).some(([, v]) => v !== "ok") && (
+                        <div className="mt-0.5 text-xs text-warn">
+                          {Object.entries(g.server_state)
+                            .filter(([, v]) => v !== "ok")
+                            .map(([k, v]) => `${k}: ${v}`)
+                            .join("; ")}
+                        </div>
+                      )}
                     </td>
                     <td className="py-2 pr-3 text-xs">{dateTime(g.expires)}</td>
                     <td className="py-2 pr-3 text-xs">
@@ -356,7 +444,7 @@ function AllGrants() {
                       {g.status_reason && <div className="mt-1 text-foreground-muted">{g.status_reason}</div>}
                     </td>
                     <td className="py-2 text-right">
-                      <Button size="sm" variant="ghost" className="text-crit" onClick={() => (setConfirm(g), setError(""))}>
+                      <Button size="sm" variant="ghost" className="text-crit!" onClick={() => (setConfirm(g), setError(""))}>
                         Revoke
                       </Button>
                     </td>
@@ -378,7 +466,8 @@ function AllGrants() {
               <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                 <span>
                   {r.kind === "revoke" ? "Revoke " : ""}
-                  <code className="font-mono">{r.unix_user}</code> → {r.servers.join(", ")} <span className="text-xs text-foreground-muted">({r.requester_email}, grant {r.grant_id})</span>
+                  <code className="font-mono">{r.unix_user}</code> → <Targets servers={r.servers} groups={r.groups} />{" "}
+                  <span className="text-xs text-foreground-muted">({r.requester_email}, grant {r.grant_id})</span>
                 </span>
                 <span className="flex items-center gap-2">
                   {r.pr_url && (
@@ -417,7 +506,7 @@ function AllGrants() {
         }
       >
         <p>
-          This opens a pull request removing <code className="font-mono">{confirm?.user}</code>&apos;s access to {confirm?.servers.join(", ")}. Once it is approved and merged, the
+          This opens a pull request removing <code className="font-mono">{confirm?.user}</code>&apos;s access to {confirm?.covers.join(", ") || "its servers"}. Once it is approved and merged, the
           account is disabled and the certificate is revoked on every server.
         </p>
         {error && <p className="mt-3 text-crit">{error}</p>}

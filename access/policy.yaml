@@ -13,6 +13,12 @@ servers:
   # bm1: {host: 10.0.0.11, ssh_user: bm-access-deploy, production: true}
   # bm2: {host: 10.0.0.12, ssh_user: bm-access-deploy, production: true}
 
+# Access groups: a grant for a group covers its servers, including servers added
+# later. Changing a group changes everyone's access, so it is a reviewed pull
+# request; the dashboard's group pages open it ("SSH access" card). Sudo cannot be
+# requested for a group. Example:  puku-bot: [bm3]
+groups: {}
+
 # Longest access a single request may ask for, in days.
 max_days: 30
 max_sudo_days: 7

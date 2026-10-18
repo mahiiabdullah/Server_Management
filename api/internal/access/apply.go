@@ -13,15 +13,20 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// This file is the apply engine run by the bm2 runner after a merge (and daily).
+// This file is the apply engine run by the runner after a merge (and hourly).
 // It never trusts the grants file alone: every grant must be backed by a merged
 // pull request with enough admin approvals on its final commit (the Verifier),
 // because a free GitHub plan cannot enforce branch protection on private repos.
+//
+// Group grants follow their group. If a group later gains a production server,
+// a grant approved by only one admin is not applied there (production needs
+// two); its other servers keep working.
 
 // State is persisted between runs on the access-state branch.
 type State struct {
-	Approved map[string]string     `json:"approved"` // grant id → hash of the approved grant
-	Issued   map[string]IssuedCert `json:"issued"`   // grant id → certificate issued for it
+	Approved  map[string]string     `json:"approved"`  // grant id → hash of the approved grant
+	Approvals map[string]int        `json:"approvals"` // grant id → admin approvals its pull request had
+	Issued    map[string]IssuedCert `json:"issued"`    // grant id → certificate issued for it
 }
 
 type IssuedCert struct {
@@ -33,6 +38,7 @@ type IssuedCert struct {
 type Status struct {
 	GeneratedAt time.Time               `json:"generated_at"`
 	Commit      string                  `json:"commit"`
+	PolicyNote  string                  `json:"policy_note,omitempty"` // e.g. a policy change awaiting approval
 	Grants      map[string]GrantStatus  `json:"grants"`
 	Servers     map[string]ServerStatus `json:"servers"`
 }
@@ -41,7 +47,7 @@ type GrantStatus struct {
 	Status      string            `json:"status"` // active | awaiting_approval | expired | not_started
 	Reason      string            `json:"reason,omitempty"`
 	CertExpires *time.Time        `json:"cert_expires,omitempty"`
-	Servers     map[string]string `json:"servers,omitempty"` // server → "ok" | error message
+	Servers     map[string]string `json:"servers,omitempty"` // server → "ok" | why it is not applied there
 }
 
 type ServerStatus struct {
@@ -51,9 +57,10 @@ type ServerStatus struct {
 	AppliedAt time.Time `json:"applied_at"`
 }
 
-// Verifier confirms that a grant was approved through a merged pull request.
+// Verifier confirms that a grant was approved through a merged pull request,
+// and reports how many admins approved it.
 type Verifier interface {
-	Verify(ctx context.Context, g Grant) (ok bool, reason string, err error)
+	Verify(ctx context.Context, g Grant) (ok bool, approvals int, reason string, err error)
 }
 
 // Remote applies the desired accounts and revocation list to one server.
@@ -76,7 +83,8 @@ type ApplyInput struct {
 	KRL      KRLMaker
 	Now      time.Time
 	Commit   string
-	DryRun   bool // compute and sign, but do not touch servers
+	DryRun   bool   // compute and sign, but do not touch servers
+	Note     string // published as Status.PolicyNote
 }
 
 // ApplyResult is what the caller persists.
@@ -90,7 +98,12 @@ type ApplyResult struct {
 // GrantHash identifies the exact approved content of a grant.
 func GrantHash(g Grant) string {
 	g.RequestedAt, g.Expires = g.RequestedAt.UTC(), g.Expires.UTC()
+	g.Servers, g.Groups = append([]string(nil), g.Servers...), append([]string(nil), g.Groups...)
 	sort.Strings(g.Servers)
+	sort.Strings(g.Groups)
+	if len(g.Groups) == 0 {
+		g.Groups = nil
+	}
 	b, _ := json.Marshal(g)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -99,17 +112,20 @@ func GrantHash(g Grant) string {
 // Apply runs one reconciliation. Errors on individual servers are recorded in
 // the status and do not stop the others.
 func Apply(ctx context.Context, in ApplyInput) (*ApplyResult, error) {
-	st := &State{Approved: map[string]string{}, Issued: map[string]IssuedCert{}}
+	st := &State{Approved: map[string]string{}, Approvals: map[string]int{}, Issued: map[string]IssuedCert{}}
 	if in.State != nil {
 		for k, v := range in.State.Approved {
 			st.Approved[k] = v
+		}
+		for k, v := range in.State.Approvals {
+			st.Approvals[k] = v
 		}
 		for k, v := range in.State.Issued {
 			st.Issued[k] = v
 		}
 	}
 	res := &ApplyResult{State: st, Certs: map[string][]byte{},
-		Status: Status{GeneratedAt: in.Now.UTC(), Commit: in.Commit, Grants: map[string]GrantStatus{}, Servers: map[string]ServerStatus{}}}
+		Status: Status{GeneratedAt: in.Now.UTC(), Commit: in.Commit, PolicyNote: in.Note, Grants: map[string]GrantStatus{}, Servers: map[string]ServerStatus{}}}
 
 	// 1. Only grants backed by an approved, merged pull request count.
 	inFile := map[string]bool{}
@@ -117,24 +133,57 @@ func Apply(ctx context.Context, in ApplyInput) (*ApplyResult, error) {
 	for _, g := range in.File.Grants {
 		inFile[g.ID] = true
 		h := GrantHash(g)
-		if st.Approved[g.ID] != h {
-			ok, reason, err := in.Verifier.Verify(ctx, g)
+		if _, counted := st.Approvals[g.ID]; st.Approved[g.ID] != h || !counted {
+			ok, n, reason, err := in.Verifier.Verify(ctx, g)
 			if err != nil {
 				return nil, fmt.Errorf("verify grant %s: %w", g.ID, err)
 			}
 			if !ok {
+				delete(st.Approved, g.ID)
+				delete(st.Approvals, g.ID)
 				res.Status.Grants[g.ID] = GrantStatus{Status: "awaiting_approval", Reason: reason}
 				continue
 			}
-			st.Approved[g.ID] = h
+			st.Approved[g.ID], st.Approvals[g.ID] = h, n
 		}
 		effective = append(effective, g)
 	}
 	for id := range st.Approved {
 		if !inFile[id] {
 			delete(st.Approved, id)
+			delete(st.Approvals, id)
 		}
 	}
+
+	// Servers each grant may reach now: production needs two approvals, even if
+	// a group only gained a production server after the grant was approved.
+	held := map[string]map[string]string{} // grant → server → why not applied
+	allowed := func(g Grant) []string {
+		var out []string
+		for _, s := range in.Policy.ServersOf(g) {
+			if in.Policy.Servers[s].Production && st.Approvals[g.ID] < 2 {
+				if held[g.ID] == nil {
+					held[g.ID] = map[string]string{}
+				}
+				held[g.ID][s] = "not applied: production needs 2 admin approvals; open a new request"
+				continue
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+	allowedOf := map[string][]string{}
+	var reachable []Grant
+	for _, g := range effective {
+		allowedOf[g.ID] = allowed(g)
+		if len(allowedOf[g.ID]) == 0 && len(held[g.ID]) > 0 {
+			res.Status.Grants[g.ID] = GrantStatus{Status: "awaiting_approval", Reason: "every server it covers is production now, which needs 2 admin approvals",
+				Servers: held[g.ID]}
+			continue
+		}
+		reachable = append(reachable, g)
+	}
+	effective = reachable
 
 	// 2. Certificates for active grants.
 	active := map[string]bool{}
@@ -182,7 +231,7 @@ func Apply(ctx context.Context, in ApplyInput) (*ApplyResult, error) {
 	res.KRL = krl
 
 	// 4. Accounts on every server.
-	desired := Desired(&File{Grants: effective}, in.Policy, in.Now)
+	desired := DesiredOn(effective, func(g Grant) []string { return allowedOf[g.ID] }, in.Policy, in.Now)
 	names := make([]string, 0, len(in.Policy.Servers))
 	for n := range in.Policy.Servers {
 		names = append(names, n)
@@ -204,12 +253,15 @@ func Apply(ctx context.Context, in ApplyInput) (*ApplyResult, error) {
 		if !ok || gs.Status != "active" {
 			continue
 		}
-		for _, s := range g.Servers {
+		for _, s := range allowedOf[g.ID] {
 			if ss := res.Status.Servers[s]; ss.OK {
 				gs.Servers[s] = "ok"
 			} else {
 				gs.Servers[s] = ss.Error
 			}
+		}
+		for s, why := range held[g.ID] {
+			gs.Servers[s] = why
 		}
 		res.Status.Grants[g.ID] = gs
 	}

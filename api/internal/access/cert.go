@@ -74,15 +74,20 @@ type Account struct {
 
 // Desired computes, for every server in the policy, the managed accounts that
 // should exist at time now. A user with several active grants on a server gets
-// sudo if any of them grants it.
+// sudo if any of them grants it. Groups expand to their current servers.
 func Desired(f *File, p *Policy, now time.Time) map[string][]Account {
+	return DesiredOn(f.Grants, p.ServersOf, p, now)
+}
+
+// DesiredOn is Desired with the servers of each grant chosen by serversOf.
+func DesiredOn(grants []Grant, serversOf func(Grant) []string, p *Policy, now time.Time) map[string][]Account {
 	type key struct{ server, user string }
 	sudo := map[key]bool{}
-	for _, g := range f.Grants {
+	for _, g := range grants {
 		if !g.Active(now) {
 			continue
 		}
-		for _, s := range g.Servers {
+		for _, s := range serversOf(g) {
 			k := key{s, g.User}
 			sudo[k] = sudo[k] || g.Sudo
 		}

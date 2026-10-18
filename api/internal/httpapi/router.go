@@ -204,6 +204,8 @@ func (a *API) Handler() http.Handler {
 			r.With(a.registerLimiter.middleware).Post("/access/requests", a.createAccessRequest)
 			r.With(admin).Get("/access/grants", a.listGrants)
 			r.With(admin).Post("/access/grants/{grantID}/revoke", a.revokeGrant)
+			r.Get("/groups/{id}/access", a.groupAccess)
+			r.With(admin).Post("/groups/{id}/access/propose", a.proposeGroupAccess)
 
 			r.Get("/settings", a.getSettings)
 			r.With(admin).Put("/settings", a.putSettings)

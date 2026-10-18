@@ -58,7 +58,7 @@ func (a *API) accessConfig(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 	u := auth.UserFrom(r.Context())
 	unix, uerr := access.UsernameFromEmail(u.Email)
-	out := map[string]any{"enabled": true, "repo": a.access.Repo(), "servers": servers,
+	out := map[string]any{"enabled": true, "repo": a.access.Repo(), "servers": servers, "groups": accessreq.ConfigGroups(p),
 		"max_days": p.MaxDays, "max_sudo_days": p.MaxSudoDays, "admins": len(p.Admins), "unix_user": unix}
 	if uerr != nil {
 		out["unix_user_error"] = uerr.Error()
@@ -92,6 +92,7 @@ func (a *API) createAccessRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Servers   []string `json:"servers"`
+		Groups    []string `json:"groups"`
 		Sudo      bool     `json:"sudo"`
 		Days      int      `json:"days"`
 		Reason    string   `json:"reason"`
@@ -103,7 +104,7 @@ func (a *API) createAccessRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	u := auth.UserFrom(r.Context())
 	res, err := a.access.Create(r.Context(), u.ID, u.Email, accessreq.Input{
-		Servers: req.Servers, Sudo: req.Sudo, Days: req.Days, Reason: req.Reason, PublicKey: req.PublicKey,
+		Servers: req.Servers, Groups: req.Groups, Sudo: req.Sudo, Days: req.Days, Reason: req.Reason, PublicKey: req.PublicKey,
 	}, a.event(r))
 	if err != nil {
 		a.accessError(w, r, err)
@@ -123,6 +124,64 @@ func (a *API) listGrants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": grants, "applied": st})
+}
+
+// groupServerNames returns the dashboard group and the names of its live servers.
+func (a *API) groupServerNames(r *http.Request) (string, []string, bool) {
+	id, ok := idParam(r, "id")
+	if !ok {
+		return "", nil, false
+	}
+	g, err := a.inv.GetGroup(r.Context(), id)
+	if err != nil {
+		return "", nil, false
+	}
+	all, err := a.inv.List(r.Context())
+	if err != nil {
+		return "", nil, false
+	}
+	names := []string{}
+	for _, s := range all {
+		if s.InGroup(id) {
+			names = append(names, s.Name)
+		}
+	}
+	return g.Name, names, true
+}
+
+// groupAccess compares a dashboard group with the SSH access group of the same name.
+func (a *API) groupAccess(w http.ResponseWriter, r *http.Request) {
+	name, servers, ok := a.groupServerNames(r)
+	if !ok {
+		fail(w, r, errNotFound)
+		return
+	}
+	ga, err := a.access.GroupAccess(r.Context(), name, servers)
+	if err != nil {
+		a.accessError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ga)
+}
+
+// proposeGroupAccess opens a policy pull request that makes the access group match. Admin only.
+func (a *API) proposeGroupAccess(w http.ResponseWriter, r *http.Request) {
+	if !a.access.Enabled() {
+		a.accessError(w, r, accessreq.ErrNotConfigured)
+		return
+	}
+	name, servers, ok := a.groupServerNames(r)
+	if !ok {
+		fail(w, r, errNotFound)
+		return
+	}
+	u := auth.UserFrom(r.Context())
+	p, err := a.access.ProposeGroup(r.Context(), u.ID, u.Email, name, servers, a.event(r))
+	if err != nil {
+		a.accessError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
 }
 
 func (a *API) revokeGrant(w http.ResponseWriter, r *http.Request) {

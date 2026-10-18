@@ -157,8 +157,8 @@ func (p *Policy) ValidateGrant(g Grant, now time.Time, isNew bool) Problems {
 	} else if want != g.User {
 		bad("user", fmt.Sprintf("must be %q (derived from the email)", want))
 	}
-	if len(g.Servers) == 0 {
-		bad("servers", "at least one server is required")
+	if len(g.Servers) == 0 && len(g.Groups) == 0 {
+		bad("servers", "choose at least one server or group")
 	}
 	seen := map[string]bool{}
 	for _, s := range g.Servers {
@@ -169,6 +169,22 @@ func (p *Policy) ValidateGrant(g Grant, now time.Time, isNew bool) Problems {
 			bad("servers", fmt.Sprintf("%q listed twice", s))
 		}
 		seen[s] = true
+	}
+	seenGroup := map[string]bool{}
+	for _, grp := range g.Groups {
+		if _, ok := p.Groups[grp]; !ok {
+			bad("groups", fmt.Sprintf("unknown access group %q", grp))
+		}
+		if seenGroup[grp] {
+			bad("groups", fmt.Sprintf("%q listed twice", grp))
+		}
+		seenGroup[grp] = true
+	}
+	if g.Sudo && len(g.Groups) > 0 {
+		bad("sudo", "sudo cannot be requested for a group; request it for specific servers")
+	}
+	if isNew && len(g.Groups) > 0 && len(p.ServersOf(g)) == 0 {
+		bad("groups", "these groups have no servers yet")
 	}
 	if r := strings.TrimSpace(g.Reason); len(r) < 10 || len(r) > 300 {
 		bad("reason", "must be 10-300 characters")
@@ -267,10 +283,17 @@ func Diff(base, head *File) Change {
 
 func sameGrant(a, b Grant) bool {
 	if a.ID != b.ID || a.User != b.User || a.Email != b.Email || a.Sudo != b.Sudo || a.Reason != b.Reason ||
-		a.PublicKey != b.PublicKey || !a.RequestedAt.Equal(b.RequestedAt) || !a.Expires.Equal(b.Expires) || len(a.Servers) != len(b.Servers) {
+		a.PublicKey != b.PublicKey || !a.RequestedAt.Equal(b.RequestedAt) || !a.Expires.Equal(b.Expires) {
 		return false
 	}
-	x, y := append([]string(nil), a.Servers...), append([]string(nil), b.Servers...)
+	return sameSet(a.Servers, b.Servers) && sameSet(a.Groups, b.Groups)
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	x, y := append([]string(nil), a...), append([]string(nil), b...)
 	sort.Strings(x)
 	sort.Strings(y)
 	for i := range x {
@@ -364,6 +387,25 @@ func (p *Policy) CountApprovals(reviews []Review, headSHA, requesterEmail string
 	}
 	sort.Strings(ignored)
 	return n, ignored
+}
+
+// PolicyApprovals counts approvals of a pull request that changes the policy:
+// from admins of the policy before the change, on the final commit, never from
+// its author. For a pull request the dashboard bot opened, the admin named on
+// its "Requested by:" line counts as the author.
+func PolicyApprovals(base *Policy, reviews []Review, headSHA, author, body string) (int, []string) {
+	exclude := ""
+	if a := base.AdminByGitHub(author); a != nil {
+		exclude = a.Email
+	} else if strings.HasSuffix(author, "[bot]") {
+		for _, line := range strings.Split(body, "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Requested by:"); ok {
+				exclude = strings.TrimSpace(v)
+				break
+			}
+		}
+	}
+	return base.CountApprovals(reviews, headSHA, exclude)
 }
 
 // Review is one pull-request review, as GitHub reports it.

@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"bm-monitor/api/internal/access"
+	"bm-monitor/api/internal/ghclient"
 )
 
 func cmdApply(args []string) error {
@@ -32,6 +33,7 @@ func cmdApply(args []string) error {
 	knownHosts := fs.String("known-hosts", "/etc/bm-access/known_hosts", "pinned host keys of the servers")
 	commit := fs.String("commit", os.Getenv("GITHUB_SHA"), "commit being applied")
 	dryRun := fs.Bool("dry-run", false, "sign and compute, but do not touch servers")
+	verifyPol := fs.Bool("verify-policy", false, "require the policy to come from a merged PR approved by another admin; otherwise use the last approved policy")
 	_ = fs.Parse(args)
 
 	// Defence in depth: the runner must only ever act on main, whatever the workflow file says.
@@ -39,9 +41,16 @@ func cmdApply(args []string) error {
 		return fmt.Errorf("refusing to apply from %s: only refs/heads/main may change servers", os.Getenv("GITHUB_REF"))
 	}
 
-	p, err := readPolicy(*pol)
+	c, err := client()
 	if err != nil {
 		return err
+	}
+	p, note, err := choosePolicy(context.Background(), c, *pol, *stateDir, *verifyPol)
+	if err != nil {
+		return err
+	}
+	if note != "" {
+		fmt.Println("::warning::" + note)
 	}
 	f, err := readFile(*grants)
 	if err != nil {
@@ -58,16 +67,12 @@ func cmdApply(args []string) error {
 	if err != nil {
 		return err
 	}
-	c, err := client()
-	if err != nil {
-		return err
-	}
 	res, err := access.Apply(context.Background(), access.ApplyInput{
 		File: f, Policy: p, State: st, Certs: certs, CA: ca,
 		Verifier: ghVerifier{c: c, policy: p},
 		Remote:   sshRemote{key: *deployKey, knownHosts: *knownHosts},
 		KRL:      sshKeygenKRL,
-		Now:      time.Now(), Commit: *commit, DryRun: *dryRun,
+		Now:      time.Now(), Commit: *commit, DryRun: *dryRun, Note: note,
 	})
 	if err != nil {
 		return err
@@ -93,6 +98,45 @@ func cmdApply(args []string) error {
 		return fmt.Errorf("%d server(s) could not be updated; the next run retries", failed)
 	}
 	return nil
+}
+
+const approvedPolicyFile = "policy.approved.yaml"
+
+// choosePolicy returns the policy to apply. With verify, a policy on main that
+// was not approved by another admin is ignored in favour of the last approved
+// copy (kept on the access-state branch), so revocations keep working.
+func choosePolicy(ctx context.Context, c *ghclient.Client, path, stateDir string, verify bool) (*access.Policy, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", err
+	}
+	p, err := access.ParsePolicy(data)
+	if err != nil {
+		return nil, "", err
+	}
+	if !verify {
+		return p, "", nil
+	}
+	ok, reason, err := policyVerified(ctx, c, data)
+	if err != nil {
+		return nil, "", err
+	}
+	saved := filepath.Join(stateDir, approvedPolicyFile)
+	if ok {
+		if err := os.WriteFile(saved, data, 0o644); err != nil {
+			return nil, "", err
+		}
+		return p, "", nil
+	}
+	old, err := os.ReadFile(saved)
+	if err != nil {
+		return nil, "", fmt.Errorf("the policy on main is not approved (%s) and no approved policy is known yet: merge a reviewed policy pull request first", reason)
+	}
+	op, err := access.ParsePolicy(old)
+	if err != nil {
+		return nil, "", fmt.Errorf("last approved policy: %w", err)
+	}
+	return op, "Policy change on main is not approved yet (" + reason + "); applying the last approved policy.", nil
 }
 
 func loadCA(path, passFile string) (ssh.Signer, error) {

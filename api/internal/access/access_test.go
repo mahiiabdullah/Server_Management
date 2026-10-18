@@ -263,3 +263,52 @@ func TestDesired(t *testing.T) {
 		t.Errorf("bm3 (sudo from the second grant, expired carol absent): %+v", d["bm3"])
 	}
 }
+
+func TestGroupRules(t *testing.T) {
+	p := groupPolicy(t, "  puku-bot: [bm3, bm4]\n  ops: [bm1, bm3]\n  empty: []\n")
+	g := grant(t, "0060", "rakib@example.com")
+	g.Groups = []string{"puku-bot", "ops"}
+	if got := strings.Join(p.ServersOf(g), ","); got != "bm1,bm3,bm4" {
+		t.Errorf("servers of = %s", got)
+	}
+	if !p.NeedsTwoApprovals(g) {
+		t.Error("a group with a production server must need two approvals")
+	}
+	g.Groups = []string{"puku-bot"}
+	if p.NeedsTwoApprovals(g) || len(p.ValidateGrant(g, now, true)) != 0 {
+		t.Errorf("valid group grant: two=%v problems=%v", p.NeedsTwoApprovals(g), p.ValidateGrant(g, now, true))
+	}
+	for name, mutate := range map[string]func(*Grant){
+		"sudo on a group": func(x *Grant) { x.Sudo = true; x.Expires = now.Add(24 * time.Hour) },
+		"unknown group":   func(x *Grant) { x.Groups = []string{"nope"} },
+		"empty group":     func(x *Grant) { x.Groups = []string{"empty"} },
+		"twice":           func(x *Grant) { x.Groups = []string{"puku-bot", "puku-bot"} },
+		"nothing":         func(x *Grant) { x.Groups = nil },
+	} {
+		x := g
+		mutate(&x)
+		if len(p.ValidateGrant(x, now, true)) == 0 {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := ParsePolicy([]byte("servers: {bm3: {host: h}}\nmax_days: 3\nmax_sudo_days: 1\nadmins: [{github: a, email: a@x.io}]\ngroups: {g: [bm9]}\n")); err == nil {
+		t.Error("group with an unknown server accepted")
+	}
+
+	// A request PR that adds a group grant passes the same CI rules.
+	base := &File{}
+	if res := p.CheckPR(base, &File{Grants: []Grant{g}}, KindRequest, now); len(res.Problems) > 0 || res.RequiredApprovals != 1 {
+		t.Errorf("check = %+v", res)
+	}
+	// The grant file round-trips groups, and they are part of the approved content.
+	b, _ := (&File{Grants: []Grant{g}}).Marshal()
+	f, err := ParseFile(b)
+	if err != nil || len(f.Grants[0].Groups) != 1 || !strings.Contains(string(b), "groups:") || strings.Contains(string(b), "servers:") {
+		t.Fatalf("round trip: %v\n%s", err, b)
+	}
+	other := g
+	other.Groups = []string{"ops"}
+	if GrantHash(g) == GrantHash(other) {
+		t.Error("changing a grant's group does not change its hash")
+	}
+}

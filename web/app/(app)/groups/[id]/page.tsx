@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { GroupChips, GroupForm, ManageServers } from "@/components/groups";
+import { AccessGroupCard } from "@/components/access-group";
 import { GroupPeopleCard } from "@/components/people";
 import { EmptyState, ErrorState, LoadingBlock, StaleBanner } from "@/components/states";
 import { AlertStateBadge, SeverityBadge, StatusBadge } from "@/components/status";
@@ -71,7 +72,10 @@ export default function GroupPage() {
         <AlertsCard d={d} />
         <GroupPeopleCard groupId={g.id} groupName={g.name} people={d.people} />
       </div>
-      <CostCard d={d} />
+      <div className="grid gap-5 lg:grid-cols-2">
+        <CostCard d={d} />
+        <AccessGroupCard groupId={g.id} />
+      </div>
 
       <GroupForm key={editing ? "edit-open" : "edit-closed"} open={editing} onClose={() => setEditing(false)} group={g} />
       <ManageServers

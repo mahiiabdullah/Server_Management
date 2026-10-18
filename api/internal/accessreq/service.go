@@ -92,6 +92,7 @@ type Request struct {
 	RequesterEmail string     `json:"requester_email"`
 	UnixUser       string     `json:"unix_user"`
 	Servers        []string   `json:"servers"`
+	Groups         []string   `json:"groups"`
 	Sudo           bool       `json:"sudo"`
 	Reason         string     `json:"reason"`
 	KeyFingerprint *string    `json:"key_fingerprint"`
@@ -105,19 +106,20 @@ type Request struct {
 	CreatedAt      time.Time  `json:"created_at"`
 }
 
-const cols = `id, kind, grant_id, requester_email, unix_user, servers, sudo, reason, key_fingerprint,
+const cols = `id, kind, grant_id, requester_email, unix_user, servers, groups, sudo, reason, key_fingerprint,
 	requested_at, expires_at, status, status_detail, pr_number, pr_url, certificate, created_at`
 
 func scan(row interface{ Scan(...any) error }) (*Request, error) {
 	var r Request
-	err := row.Scan(&r.ID, &r.Kind, &r.GrantID, &r.RequesterEmail, &r.UnixUser, &r.Servers, &r.Sudo, &r.Reason, &r.KeyFingerprint,
+	err := row.Scan(&r.ID, &r.Kind, &r.GrantID, &r.RequesterEmail, &r.UnixUser, &r.Servers, &r.Groups, &r.Sudo, &r.Reason, &r.KeyFingerprint,
 		&r.RequestedAt, &r.ExpiresAt, &r.Status, &r.StatusDetail, &r.PRNumber, &r.PRURL, &r.Certificate, &r.CreatedAt)
 	return &r, err
 }
 
-// Input is what the user fills in.
+// Input is what the user fills in: servers, access groups, or both.
 type Input struct {
 	Servers   []string
+	Groups    []string
 	Sudo      bool
 	Days      int
 	Reason    string
@@ -161,7 +163,7 @@ func (s *Service) Create(ctx context.Context, userID, email string, in Input, ev
 
 	// Validate the grant before allocating its number, so rejected attempts use none.
 	now := s.now().UTC().Truncate(time.Second)
-	g := access.Grant{ID: "0000", User: user, Email: strings.ToLower(email), Servers: in.Servers, Sudo: in.Sudo,
+	g := access.Grant{ID: "0000", User: user, Email: strings.ToLower(email), Servers: in.Servers, Groups: in.Groups, Sudo: in.Sudo,
 		Reason: strings.TrimSpace(in.Reason), PublicKey: key.Normalized, RequestedAt: now, Expires: now.AddDate(0, 0, in.Days)}
 	if probs := p.ValidateGrant(g, now, true); len(probs) > 0 {
 		return nil, &ValidationError{Fields: problemFields(probs)}
@@ -209,7 +211,7 @@ func (s *Service) Create(ctx context.Context, userID, email string, in Input, ev
 	if err := s.gh.CreateBranch(ctx, branch, mainSHA); err != nil {
 		return nil, fmt.Errorf("create branch: %w", err)
 	}
-	if err := s.gh.PutFile(ctx, access.GrantsPath, branch, fmt.Sprintf("Access request %s: %s on %s", id, user, strings.Join(in.Servers, ", ")), content, blobSHA); err != nil {
+	if err := s.gh.PutFile(ctx, access.GrantsPath, branch, fmt.Sprintf("Access request %s: %s on %s", id, user, targets(g)), content, blobSHA); err != nil {
 		return nil, fmt.Errorf("commit request: %w", err)
 	}
 	pr, err := s.gh.CreatePR(ctx, prTitle(g), prBody(g, key, p, check.RequiredApprovals), branch, MainBranch)
@@ -220,15 +222,15 @@ func (s *Service) Create(ctx context.Context, userID, email string, in Input, ev
 		s.log.Warn("label pull request", "pr", pr.Number, "err", err)
 	}
 
-	r, err := scan(s.pool.QueryRow(ctx, `INSERT INTO access_requests (kind, grant_id, user_id, requester_email, unix_user, servers, sudo, reason,
+	r, err := scan(s.pool.QueryRow(ctx, `INSERT INTO access_requests (kind, grant_id, user_id, requester_email, unix_user, servers, groups, sudo, reason,
 		key_fingerprint, requested_at, expires_at, status, branch, pr_number, pr_url)
-		VALUES ('request',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pr_open',$11,$12,$13) RETURNING `+cols,
-		id, userID, g.Email, user, g.Servers, g.Sudo, g.Reason, key.Fingerprint, g.RequestedAt, g.Expires, branch, pr.Number, pr.HTMLURL))
+		VALUES ('request',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pr_open',$12,$13,$14) RETURNING `+cols,
+		id, userID, g.Email, user, nonNil(g.Servers), nonNil(g.Groups), g.Sudo, g.Reason, key.Fingerprint, g.RequestedAt, g.Expires, branch, pr.Number, pr.HTMLURL))
 	if err != nil {
 		return nil, err
 	}
 	ev.Action, ev.TargetType, ev.TargetID = "access.request", "access_grant", id
-	ev.After = map[string]any{"servers": g.Servers, "sudo": g.Sudo, "days": in.Days, "pr": pr.Number, "key": key.Fingerprint}
+	ev.After = map[string]any{"servers": g.Servers, "groups": g.Groups, "sudo": g.Sudo, "days": in.Days, "pr": pr.Number, "key": key.Fingerprint}
 	_ = audit.Record(ctx, s.pool, ev)
 	return r, nil
 }
@@ -237,7 +239,7 @@ func (s *Service) Create(ctx context.Context, userID, email string, in Input, ev
 func problemFields(ps access.Problems) map[string]string {
 	fe := map[string]string{}
 	for _, pr := range ps {
-		field := map[string]string{"servers": "servers", "reason": "reason", "public_key": "public_key", "expires": "days"}[pr.Field]
+		field := map[string]string{"servers": "servers", "groups": "groups", "sudo": "sudo", "reason": "reason", "public_key": "public_key", "expires": "days"}[pr.Field]
 		if field == "" {
 			field = "form"
 		}
@@ -246,19 +248,49 @@ func problemFields(ps access.Problems) map[string]string {
 	return fe
 }
 
+func nonNil(xs []string) []string {
+	if xs == nil {
+		return []string{}
+	}
+	return xs
+}
+
+// targets names what a grant covers, e.g. "bm3, group puku-bot".
+func targets(g access.Grant) string {
+	parts := append([]string(nil), g.Servers...)
+	for _, grp := range g.Groups {
+		parts = append(parts, "group "+grp)
+	}
+	return strings.Join(parts, ", ")
+}
+
 func prTitle(g access.Grant) string {
 	sudo := ""
 	if g.Sudo {
 		sudo = " with sudo"
 	}
-	return fmt.Sprintf("SSH access: %s → %s%s until %s", g.User, strings.Join(g.Servers, ", "), sudo, g.Expires.Format("2 Jan 2006"))
+	return fmt.Sprintf("SSH access: %s → %s%s until %s", g.User, targets(g), sudo, g.Expires.Format("2 Jan 2006"))
 }
 
 func prBody(g access.Grant, key *access.KeyInfo, p *access.Policy, required int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Access request **%s**, opened from the BM Monitor dashboard.\n\n", g.ID)
 	fmt.Fprintf(&b, "| | |\n|---|---|\n")
-	fmt.Fprintf(&b, "| Requested by | %s |\n| Unix account | `%s` |\n| Servers | %s |\n", g.Email, g.User, strings.Join(g.Servers, ", "))
+	fmt.Fprintf(&b, "| Requested by | %s |\n| Unix account | `%s` |\n", g.Email, g.User)
+	if len(g.Servers) > 0 {
+		fmt.Fprintf(&b, "| Servers | %s |\n", strings.Join(g.Servers, ", "))
+	}
+	if len(g.Groups) > 0 {
+		fmt.Fprintf(&b, "| Access groups | %s (the grant follows the group: servers added to it later are covered too) |\n", strings.Join(g.Groups, ", "))
+	}
+	var covers []string
+	for _, srv := range p.ServersOf(g) {
+		if p.Servers[srv].Production {
+			srv += " **(production)**"
+		}
+		covers = append(covers, srv)
+	}
+	fmt.Fprintf(&b, "| Covers today | %s |\n", strings.Join(covers, ", "))
 	fmt.Fprintf(&b, "| Sudo | %s |\n| Valid | %s → %s (UTC) |\n", map[bool]string{true: "**yes**", false: "no"}[g.Sudo],
 		g.RequestedAt.Format("2006-01-02 15:04"), g.Expires.Format("2006-01-02 15:04"))
 	fmt.Fprintf(&b, "| Key | `%s` (%s) |\n| Reason | %s |\n\n", key.Fingerprint, key.Type, strings.ReplaceAll(g.Reason, "|", "/"))
@@ -318,7 +350,7 @@ func (s *Service) Revoke(ctx context.Context, adminID, grantID string, ev audit.
 		return nil, err
 	}
 	body := fmt.Sprintf("Revokes grant **%s**: `%s` on %s (requested by %s).\n\nOpened from the BM Monitor dashboard. "+
-		"After merge, the apply job removes the account and adds the certificate to the revocation list.\n", g.ID, g.User, strings.Join(g.Servers, ", "), g.Email)
+		"After merge, the apply job removes the account and adds the certificate to the revocation list.\n", g.ID, g.User, targets(*g), g.Email)
 	pr, err := s.gh.CreatePR(ctx, fmt.Sprintf("Revoke SSH access: %s (grant %s)", g.User, g.ID), body, branch, MainBranch)
 	if err != nil {
 		return nil, err
@@ -326,13 +358,13 @@ func (s *Service) Revoke(ctx context.Context, adminID, grantID string, ev audit.
 	if err := s.gh.AddLabels(ctx, pr.Number, "access-revoke"); err != nil {
 		s.log.Warn("label pull request", "pr", pr.Number, "err", err)
 	}
-	r, err := scan(s.pool.QueryRow(ctx, `INSERT INTO access_requests (kind, grant_id, user_id, requester_email, unix_user, servers, sudo, reason,
+	r, err := scan(s.pool.QueryRow(ctx, `INSERT INTO access_requests (kind, grant_id, user_id, requester_email, unix_user, servers, groups, sudo, reason,
 		requested_at, expires_at, status, branch, pr_number, pr_url)
-		VALUES ('revoke',$1,$2,$3,$4,$5,$6,$7,$8,$9,'pr_open',$10,$11,$12)
+		VALUES ('revoke',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pr_open',$11,$12,$13)
 		ON CONFLICT (kind, grant_id) DO UPDATE SET status = 'pr_open', branch = EXCLUDED.branch, pr_number = EXCLUDED.pr_number,
 		  pr_url = EXCLUDED.pr_url, user_id = EXCLUDED.user_id, status_detail = NULL
 		RETURNING `+cols,
-		g.ID, adminID, g.Email, g.User, g.Servers, g.Sudo, "Revoked by an admin", s.now().UTC(), g.Expires, branch, pr.Number, pr.HTMLURL))
+		g.ID, adminID, g.Email, g.User, nonNil(g.Servers), nonNil(g.Groups), g.Sudo, "Revoked by an admin", s.now().UTC(), g.Expires, branch, pr.Number, pr.HTMLURL))
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +398,7 @@ func (s *Service) List(ctx context.Context, email string, all bool) ([]Request, 
 // GrantView is one grant on main with its applied status.
 type GrantView struct {
 	access.Grant
+	Covers      []string          `json:"covers"` // servers it covers now, groups expanded
 	Status      string            `json:"status"`
 	Reason      string            `json:"status_reason,omitempty"`
 	ServerState map[string]string `json:"server_state,omitempty"`
@@ -385,9 +418,13 @@ func (s *Service) Grants(ctx context.Context) ([]GrantView, *access.Status, erro
 		return nil, nil, err
 	}
 	st, _ := s.appliedStatus(ctx, true)
+	p, err := s.Policy(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	out := []GrantView{}
 	for _, g := range f.Grants {
-		v := GrantView{Grant: g, Status: "not_applied_yet"}
+		v := GrantView{Grant: g, Covers: p.ServersOf(g), Status: "not_applied_yet"}
 		if st != nil {
 			if gs, ok := st.Grants[g.ID]; ok {
 				v.Status, v.Reason, v.ServerState = gs.Status, gs.Reason, gs.Servers
@@ -429,6 +466,9 @@ func (s *Service) Sync(ctx context.Context) error {
 	if !s.Enabled() {
 		return nil
 	}
+	if err := s.syncProposals(ctx); err != nil {
+		return err
+	}
 	rows, err := s.pool.Query(ctx, `SELECT `+cols+` FROM access_requests WHERE status IN ('pr_open','merged','active')`)
 	if err != nil {
 		return err
@@ -467,12 +507,12 @@ func (s *Service) Sync(ctx context.Context) error {
 			}
 			switch {
 			case pr.Merged && r.Kind == "request":
-				short, err := s.approvalShortfall(ctx, r, pr)
+				short, note, err := s.approvalShortfall(ctx, r, pr)
 				if err != nil {
 					s.log.Warn("count approvals", "pr", *r.PRNumber, "err", err)
 					continue
 				}
-				status, detail = "merged", "Approved and merged; waiting for the apply job."
+				status, detail = "merged", "Approved and merged; waiting for the apply job."+note
 				if short != "" {
 					status, detail = "failed", short
 				}
@@ -526,30 +566,47 @@ func (s *Service) Sync(ctx context.Context) error {
 }
 
 // approvalShortfall applies the same approval rule as the apply job to a merged
-// request. It returns why the request will not be applied, or "" when it will.
+// request: sudo needs two approvals, anything else one, and production servers
+// are only reached with two. It returns why the request will not be applied at
+// all ("" when it will), and a note about production servers it will skip.
 // Reviews cannot be added after a merge, so a shortfall is final.
-func (s *Service) approvalShortfall(ctx context.Context, r *Request, pr *ghclient.PR) (string, error) {
+func (s *Service) approvalShortfall(ctx context.Context, r *Request, pr *ghclient.PR) (short, note string, err error) {
 	p, err := s.Policy(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	reviews, err := s.gh.Reviews(ctx, pr.Number)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	g := access.Grant{Servers: r.Servers, Groups: r.Groups, Sudo: r.Sudo}
+	n, ignored := p.CountApprovals(reviews, pr.HeadSHA, r.RequesterEmail)
 	need := 1
-	if p.NeedsTwoApprovals(access.Grant{Servers: r.Servers, Sudo: r.Sudo}) {
+	if g.Sudo {
 		need = 2
 	}
-	n, ignored := p.CountApprovals(reviews, pr.HeadSHA, r.RequesterEmail)
-	if n >= need {
-		return "", nil
+	var prod, other []string
+	for _, srv := range p.ServersOf(g) {
+		if p.Servers[srv].Production {
+			prod = append(prod, srv)
+		} else {
+			other = append(other, srv)
+		}
 	}
-	msg := fmt.Sprintf("Merged without the required approvals (%d of %d), so it will not be applied.", n, need)
-	if len(ignored) > 0 {
-		msg += " Not counted: " + strings.Join(ignored, ", ") + "."
+	if n >= need && n < 2 && len(other) == 0 && len(prod) > 0 {
+		need = 2 // it covers only production servers
 	}
-	return msg + " An admin should revoke grant " + r.GrantID + "; then you can request again.", nil
+	if n < need {
+		msg := fmt.Sprintf("Merged without the required approvals (%d of %d), so it will not be applied.", n, need)
+		if len(ignored) > 0 {
+			msg += " Not counted: " + strings.Join(ignored, ", ") + "."
+		}
+		return msg + " An admin should revoke grant " + r.GrantID + "; then you can request again.", "", nil
+	}
+	if n < 2 && len(prod) > 0 {
+		note = fmt.Sprintf(" It will not be applied on %s: production needs 2 admin approvals.", strings.Join(prod, ", "))
+	}
+	return "", note, nil
 }
 
 func applyDetail(gs *access.GrantStatus) string {

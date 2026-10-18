@@ -39,7 +39,7 @@ done
 
 APPLY='-e GITHUB_API_URL=http://172.31.99.30:8000 -e GITHUB_REPOSITORY=o/r -e GITHUB_TOKEN=test'
 apply() {
-  docker exec $APPLY bmt-runner /e2e/accessctl apply --grants "/e2e/repo/$1" --policy /e2e/repo/policy.yaml \
+  docker exec $APPLY bmt-runner /e2e/accessctl apply --grants "/e2e/repo/$1" --policy "/e2e/repo/${2:-policy.yaml}" \
     --state-dir /state --ca /k/ca --deploy-key /k/deploy --known-hosts /k/known_hosts --commit "$1"
 }
 SSH='ssh -o BatchMode=yes -o IdentitiesOnly=yes -o UserKnownHostsFile=/k/known_hosts -o ConnectTimeout=5'
@@ -78,6 +78,17 @@ echo "== run 3: tamper - someone edits main to give carol sudo without a pull re
 docker exec bmt-runner sh -c "sed 's/sudo: false/sudo: true/' /e2e/repo/grants2.yaml > /tmp/tampered.yaml"
 docker exec $APPLY bmt-runner /e2e/accessctl apply --grants /tmp/tampered.yaml --policy /e2e/repo/policy.yaml --state-dir /state --ca /k/ca --deploy-key /k/deploy --known-hosts /k/known_hosts --commit tampered >/dev/null 2>&1
 check "tampered grant is not applied (awaiting approval)" sh -c "docker exec bmt-runner sh -c 'grep -A2 \"\\\"0043\\\"\" /state/status.json' | grep -q awaiting_approval"
+
+echo "== run 4: erin's grant is for the access group 'workers', which contains srv"
+apply grants4.yaml policy-group.yaml >/dev/null 2>&1
+out=$(docker exec bmt-runner $SSH -i /k/erin -o CertificateFile=/state/certs/0045-cert.pub erin@172.31.99.10 id -un 2>&1)
+check "erin logs in through her group grant"       grep -qx erin <<<"$out"
+
+echo "== run 5: srv is removed from the group (a reviewed policy change)"
+apply grants4.yaml policy-group-empty.yaml >/dev/null 2>&1
+out=$(docker exec bmt-runner $SSH -i /k/erin -o CertificateFile=/state/certs/0045-cert.pub erin@172.31.99.10 id -un 2>&1)
+check "erin loses access when srv leaves the group" grep -q "Permission denied" <<<"$out"
+check "erin's account is disabled, home kept"       sh -c "docker exec bmt-srv chage -l erin | grep -q 'Account expires.*1970' && docker exec bmt-srv test -d /home/erin"
 
 echo
 echo "RESULT: $pass passed, $failn failed"

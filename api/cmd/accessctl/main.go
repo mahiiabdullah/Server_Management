@@ -1,14 +1,17 @@
 // Command accessctl runs the SSH access workflow's automated steps.
 //
-//	accessctl validate   CI: check a pull request's change to access/grants.yaml
-//	accessctl approvals  CI: check a pull request has the approvals the policy needs
-//	accessctl apply      bm2 runner: sign certificates and reconcile accounts on the servers
+//	accessctl validate          CI: check a pull request's change to access/grants.yaml
+//	accessctl approvals         CI: check a pull request has the approvals the policy needs
+//	accessctl policy-approvals  CI: check a policy change is approved by another admin
+//	accessctl check-policy      CI: check a changed policy against the current grants
+//	accessctl apply             runner: sign certificates and reconcile accounts on the servers
 //
 // The same rules (package access) run in the dashboard, so a request that the
 // dashboard accepts is judged identically here.
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,6 +39,8 @@ func main() {
 		err = cmdApply(os.Args[2:])
 	case "check-policy":
 		err = cmdCheckPolicy(os.Args[2:])
+	case "policy-approvals":
+		err = cmdPolicyApprovals(os.Args[2:])
 	default:
 		usage()
 	}
@@ -46,7 +51,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: accessctl validate|approvals|apply [flags]")
+	fmt.Fprintln(os.Stderr, "usage: accessctl validate|approvals|policy-approvals|check-policy|apply [flags]")
 	os.Exit(2)
 }
 
@@ -144,7 +149,60 @@ func cmdCheckPolicy(args []string) error {
 		}
 		return fmt.Errorf("%d existing grant(s) conflict with this policy", len(probs))
 	}
-	fmt.Printf("Policy OK: %d server(s), %d admin(s), %d grant(s) checked.\n", len(p.Servers), len(p.Admins), len(f.Grants))
+	fmt.Printf("Policy OK: %d server(s), %d group(s), %d admin(s), %d grant(s) checked.\n", len(p.Servers), len(p.Groups), len(p.Admins), len(f.Grants))
+	for _, name := range p.GroupNames() {
+		var grants []string
+		for _, g := range f.Grants {
+			for _, x := range g.Groups {
+				if x == name {
+					grants = append(grants, g.ID+" ("+g.User+")")
+				}
+			}
+		}
+		fmt.Printf("  group %-20s %s; grants using it: %s\n", name, strings.Join(p.Groups[name], ", "), orNone(grants))
+	}
+	return nil
+}
+
+func orNone(xs []string) string {
+	if len(xs) == 0 {
+		return "none"
+	}
+	return strings.Join(xs, ", ")
+}
+
+// cmdPolicyApprovals checks that a pull request changing the policy has an
+// approval from an admin (of the policy before the change) who is not its author.
+func cmdPolicyApprovals(args []string) error {
+	fs := flag.NewFlagSet("policy-approvals", flag.ExitOnError)
+	pol := fs.String("policy", access.PolicyPath, "policy.yaml from the target branch (its admins decide)")
+	pr := fs.Int("pr", 0, "pull request number")
+	_ = fs.Parse(args)
+	base, err := readPolicy(*pol)
+	if err != nil {
+		return err
+	}
+	c, err := client()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	info, err := c.GetPR(ctx, *pr)
+	if err != nil {
+		return err
+	}
+	reviews, err := c.Reviews(ctx, *pr)
+	if err != nil {
+		return err
+	}
+	n, ignored := access.PolicyApprovals(base, reviews, info.HeadSHA, info.Author, info.Body)
+	for _, i := range ignored {
+		fmt.Println("Not counted:", i)
+	}
+	fmt.Printf("Policy approvals: %d of 1 required (an admin other than the author, on the latest commit).\n", n)
+	if n < 1 {
+		return errors.New("a policy change needs an approval from another admin")
+	}
 	return nil
 }
 
@@ -199,10 +257,12 @@ type ghVerifier struct {
 	policy *access.Policy
 }
 
-func (v ghVerifier) Verify(ctx context.Context, g access.Grant) (bool, string, error) {
+// Verify requires two approvals for sudo and one otherwise; production servers
+// are then held back per server by the apply engine unless there were two.
+func (v ghVerifier) Verify(ctx context.Context, g access.Grant) (bool, int, string, error) {
 	prs, err := v.c.PRsForBranch(ctx, "access/request-"+g.ID, "closed")
 	if err != nil {
-		return false, "", err
+		return false, 0, "", err
 	}
 	want := access.GrantHash(g)
 	reason := "no merged pull request from access/request-" + g.ID
@@ -216,7 +276,7 @@ func (v ghVerifier) Verify(ctx context.Context, g access.Grant) (bool, string, e
 		}
 		data, _, err := v.c.GetFile(ctx, access.GrantsPath, pr.HeadSHA)
 		if err != nil {
-			return false, "", err
+			return false, 0, "", err
 		}
 		f, err := access.ParseFile(data)
 		if err != nil {
@@ -230,15 +290,62 @@ func (v ghVerifier) Verify(ctx context.Context, g access.Grant) (bool, string, e
 		}
 		reviews, err := v.c.Reviews(ctx, pr.Number)
 		if err != nil {
-			return false, "", err
+			return false, 0, "", err
 		}
 		required := 1
-		if v.policy.NeedsTwoApprovals(g) {
+		if g.Sudo {
 			required = 2
 		}
 		n, _ := v.policy.CountApprovals(reviews, pr.HeadSHA, g.Email)
 		if n < required {
 			reason = fmt.Sprintf("PR #%d has %d of %d required admin approvals", pr.Number, n, required)
+			continue
+		}
+		return true, n, "", nil
+	}
+	return false, 0, reason, nil
+}
+
+// policyVerified reports whether the policy on main came from a merged pull
+// request approved by an admin other than its author, with exactly this content.
+func policyVerified(ctx context.Context, c *ghclient.Client, current []byte) (bool, string, error) {
+	sha, err := c.LastCommitFor(ctx, access.PolicyPath, "main")
+	if err != nil {
+		return false, "", fmt.Errorf("find the last policy change: %w", err)
+	}
+	prs, err := c.PRsForCommit(ctx, sha)
+	if err != nil {
+		return false, "", err
+	}
+	reason := fmt.Sprintf("commit %.7s changed the policy without a pull request", sha)
+	for _, pr := range prs {
+		if !pr.Merged || pr.BaseRef != "main" {
+			continue
+		}
+		head, _, err := c.GetFile(ctx, access.PolicyPath, pr.HeadSHA)
+		if err != nil {
+			return false, "", err
+		}
+		if !bytes.Equal(bytes.TrimSpace(head), bytes.TrimSpace(current)) {
+			reason = fmt.Sprintf("the policy on main differs from what PR #%d changed", pr.Number)
+			continue
+		}
+		baseData, _, err := c.GetFile(ctx, access.PolicyPath, pr.BaseSHA)
+		if err != nil {
+			reason = fmt.Sprintf("PR #%d: cannot read the policy before the change", pr.Number)
+			continue
+		}
+		base, err := access.ParsePolicy(baseData)
+		if err != nil {
+			reason = fmt.Sprintf("PR #%d: the policy before the change is invalid", pr.Number)
+			continue
+		}
+		reviews, err := c.Reviews(ctx, pr.Number)
+		if err != nil {
+			return false, "", err
+		}
+		if n, _ := access.PolicyApprovals(base, reviews, pr.HeadSHA, pr.Author, pr.Body); n < 1 {
+			reason = fmt.Sprintf("PR #%d has no approval from an admin other than its author", pr.Number)
 			continue
 		}
 		return true, "", nil

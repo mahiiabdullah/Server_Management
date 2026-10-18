@@ -138,7 +138,9 @@ func (f *fakeGitHub) merge(n int) {
 	defer f.mu.Unlock()
 	pr := f.prs[n-1]
 	pr.State, pr.Merged = "closed", true
-	f.branches["main"][access.GrantsPath] = f.branches[pr.Head][access.GrantsPath]
+	for _, path := range []string{access.GrantsPath, access.PolicyPath} {
+		f.branches["main"][path] = f.branches[pr.Head][path]
+	}
 }
 
 // publishState simulates the apply job writing status.json and certificates.

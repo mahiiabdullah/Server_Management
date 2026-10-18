@@ -81,9 +81,24 @@ jobs:
 
       - name: Check the changed policy
         if: steps.kind.outputs.kind == 'other'
+        id: policy
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           "$RUNNER_TEMP/accessctl" check-policy --policy head/access/policy.yaml --grants head/access/grants.yaml
           echo "This pull request changes the access policy. Review it like any security change."
+          if git -C head diff --name-only "$BASE_SHA" HEAD | grep -qx 'access/policy.yaml'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Policy approval (an admin other than the author)
+        if: steps.policy.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          "$RUNNER_TEMP/accessctl" policy-approvals \
+            --policy base/access/policy.yaml \
+            --pr "${{ github.event.pull_request.number }}"
 
       - name: Admin approvals
         if: steps.kind.outputs.kind != 'other'

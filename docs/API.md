@@ -53,6 +53,8 @@ Roles: **V** viewer, **O** operator, **A** admin (each includes the ones before 
 | `POST /auth/logout` | V | Deletes the session server-side |
 | `GET /me` | V | `{user, csrf_token}` |
 | `POST /me/password` | V | `{current_password, new_password}` (≥12 chars); ends the user's other sessions |
+| `GET /me/alerts` · `PATCH /me/alerts` | V | Own alert settings: `{alerts_all, min_severity, paused_until, groups:[{id,name,muted}], mailboxes}`. Patch `{min_severity?, pause?: "1d"\|"7d"\|"resume"\|RFC 3339 time ≤ 90 days, muted?: {group_id: bool}}`; only groups an admin added you to can be muted |
+| `GET /alert-links?t=` · `POST /alert-links {t}` | — | Signed pause/resume links from alert emails (30 days). No session needed: the token is the credential. Rate limited |
 | `GET /fleet/summary` | V | Status counts, core-weighted CPU, memory/disk by capacity, network, alert counts, cost or `not_configured` |
 | `GET /servers` | V | `q`, `status` (csv), `environment`, `group` (id or `none`; a server in several groups matches each), `label=k=v`, `enabled`, `sort` (`name, status, cpu, memory, disk, uptime, last_scrape, cost, created_at, environment, group`, with `-` for descending; missing values always sort last), paging. Rows include live `metrics`, `status` and `monthly_cost` |
 | `POST /servers/validate` | O | Checks and probes an exporter URL without saving; rate limited |
@@ -75,15 +77,29 @@ Roles: **V** viewer, **O** operator, **A** admin (each includes the ones before 
 | `POST /costs/import` | A | multipart `file` (.csv): `server,period,amount[,currency]`. All or nothing |
 | `GET /alerts` | V | `state` (csv), `severity` (csv), `server`, paging |
 | `POST /alerts/{id}/ack` | O | Firing → acknowledged; pending reminders are dropped |
+| `GET /alerts/{id}/deliveries` | O | Who the alert was sent to: `{items:[{event, target, kind (person or channel kind), status, attempts, sent_at, last_error}]}` |
 | `GET /alert-rules` · `POST`, `PATCH`, `DELETE /alert-rules/{id}` | V · A | System rules cannot be deleted; rules with history are disabled rather than deleted |
-| `GET`, `POST`, `PATCH /notification-channels` · `POST /notification-channels/{id}/test` | A | Addresses only; secrets stay in env |
+| `GET`, `POST`, `PATCH /notification-channels` · `POST /notification-channels/{id}/test` | A | Addresses only; secrets stay in env. `group_ids` limits a channel to alerts on servers in those groups (empty = every alert) |
 | `GET /insights/underutilized` | V | Evidence for each server; savings only when the server is priced |
 | `GET /insights/compare` | V | `metric=cpu\|memory\|disk&a=YYYY-MM&b=YYYY-MM&group=` |
 | `GET /settings` · `PUT /settings` | V · A | Editable: `proration`, `underutil_window_days`, `underutil_cpu_p95`, `underutil_mem_p95`, `underutil_min_coverage`. Timezone and currency come from env |
 | `GET /audit` | A | `action` (prefix), `target_type`, `target_id`, `actor`, paging |
-| `GET /users` · `POST /users` · `PATCH /users/{id}` | A | Roles, disable, unlock, reset password. You cannot demote or disable yourself; at least one enabled admin always remains |
+| `GET /users` · `POST /users` · `PATCH /users/{id}` | A | People: dashboard users and alert-only contacts (`kind: "contact"`: no password, no role, can never sign in). Roles, disable, unlock, reset password; alert settings `alerts_all`, `alert_min_severity`, `alert_group_ids`, `resume_alerts`. You cannot demote or disable yourself; at least one enabled admin always remains |
+| `PUT /groups/{id}/people` | A | `{user_ids:[…]}`: exactly these people get the group's alerts |
+| `GET /access/config` · `GET /access/requests` · `POST /access/requests` | V | SSH access (docs/ACCESS.md). Config lists servers and access `groups`; a request is `{servers?, groups?, sudo, days, reason, public_key}` (sudo only with servers) and opens a pull request. `?all=1` (admin) lists everyone's requests |
+| `GET /access/grants` · `POST /access/grants/{id}/revoke` | A | Grants on main with `covers` (groups expanded) and applied status; revoke opens a pull request |
+| `GET /groups/{id}/access` · `POST /groups/{id}/access/propose` | V · A | Compare the group with its SSH access group in `access/policy.yaml`; propose opens the policy pull request (docs/ACCESS.md) |
 
 ## Registering a server
+
+### Who gets an alert
+
+A server alert is emailed to every person tagged with one of the server's groups (not
+muted, not paused, severity at or above theirs), to "All alerts" people, and to every
+team mailbox that is unscoped or scoped to one of those groups. Fleet-wide alerts (no
+server) go to "All alerts" people and unscoped mailboxes. A resolution goes to the people
+who were told the alert fired. An address that a mailbox already reaches is not emailed
+twice.
 
 `POST /api/v1/servers`
 
